@@ -36,6 +36,15 @@ typedef struct {
     uint32_t *tpdf_generators;
 
     float **source_buffers, **upsample_buffers, **error_feedback;
+
+#ifdef STATISTICS
+    double *rms_filtered_error, *rms_unfiltered_error;
+    double *max_filtered_error, *max_unfiltered_error;
+    double *min_filtered_error, *min_unfiltered_error;
+    double *last_samples, *last_samples_peak;
+    int *max_run_counts, *run_counts;
+    int64_t total_samples;
+#endif
 } Modulate;
 
 Modulate *modulateInit (int numChannels, int depth);

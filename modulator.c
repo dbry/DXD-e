@@ -10,6 +10,13 @@
 
 #include "modulator.h"
 
+#ifdef NO_PRUNING
+#undef NO_PRUNING
+#define NO_PRUNING  1
+#else
+#define NO_PRUNING  0
+#endif
+
 // Higher-order noise shaping filters (i.e., above 2nd-order) become unstable,
 // especially with higher levels. Increasing look-ahead helps, but we still need
 // to soft-clip and dynamically reduce the order of the noise-shaping filter above
@@ -61,6 +68,19 @@ Modulate *modulateInit (int numChannels, int depth)
         cxt->error_feedback [c] = calloc (3, sizeof (float));
     }
 
+#ifdef STATISTICS
+    cxt->rms_filtered_error =   calloc (numChannels, sizeof (double));
+    cxt->rms_unfiltered_error = calloc (numChannels, sizeof (double));
+    cxt->max_filtered_error =   calloc (numChannels, sizeof (double));
+    cxt->max_unfiltered_error = calloc (numChannels, sizeof (double));
+    cxt->min_filtered_error =   calloc (numChannels, sizeof (double));
+    cxt->min_unfiltered_error = calloc (numChannels, sizeof (double));
+    cxt->last_samples =         calloc (numChannels, sizeof (double));
+    cxt->last_samples_peak =    calloc (numChannels, sizeof (double));
+    cxt->max_run_counts =       calloc (numChannels, sizeof (int));
+    cxt->run_counts =           calloc (numChannels, sizeof (int));
+#endif
+
     return cxt;
 }
 
@@ -68,9 +88,8 @@ ModulateResult modulateProcess (Modulate *cxt, const float *input, int numInputF
 {
     ModulateResult res = { 0, 0 };
 
-    if (cxt->flags & MODULATOR_FLUSHED) {
+    if (cxt->flags & MODULATOR_FLUSHED)
         numInputFrames = 0;
-    }
 
     if (numInputFrames < 0) {
         int samples_to_add = US_TAPS / 2 + (cxt->depth + 3) / 8;
@@ -177,7 +196,44 @@ ModulateResult modulateProcess (Modulate *cxt, const float *input, int numInputF
                 if (sample_max > SOFT_CLIP)
                     order -= (sample_max - SOFT_CLIP) / (HARD_CLIP - SOFT_CLIP) * (order - 2.0);
 
+#ifdef STATISTICS
+                float outsample = best_sample (sample_ptr, order, cxt->error_feedback [c], cxt->depth);
+                double filtered_error = outsample - *sample_ptr, unfiltered_error = cxt->error_feedback [c] [0];
+
+                if (outsample == cxt->last_samples [c]) {
+                    if (++(cxt->run_counts [c]) == 100) {
+                        fprintf (stderr, "\n*** ch %d: value %2g, terminating run of %d, ending at %.6f secs, peak value = %g ***\n\n",
+                            c, outsample, cxt->run_counts [c], (cxt->total_samples / cxt->numChannels) / 2822400.0, cxt->last_samples_peak [c]);
+                        exit (1);
+                    }
+
+                    if (sample_max > cxt->last_samples_peak [c])
+                        cxt->last_samples_peak [c] = sample_max;
+                }
+                else {
+                    if (cxt->run_counts [c] > cxt->max_run_counts [c]) {
+                        cxt->max_run_counts [c] = cxt->run_counts [c];
+                        if (cxt->run_counts [c] >= 20)
+                            fprintf (stderr, "ch %d: value %2g, terminating run of %d, ending at %.6f secs, peak value = %g\n",
+                                c, outsample, cxt->run_counts [c], (cxt->total_samples / cxt->numChannels) / 2822400.0, cxt->last_samples_peak [c]);
+                    }
+
+                    cxt->last_samples_peak [c] = sample_max;
+                    cxt->last_samples [c] = outsample;
+                    cxt->run_counts [c] = 1;
+                }
+
+                cxt->rms_filtered_error [c] += filtered_error * filtered_error;
+                cxt->rms_unfiltered_error [c] += unfiltered_error * unfiltered_error;
+                if (unfiltered_error > cxt->max_unfiltered_error [c]) cxt->max_unfiltered_error [c] = unfiltered_error;
+                if (unfiltered_error < cxt->min_unfiltered_error [c]) cxt->min_unfiltered_error [c] = unfiltered_error;
+                if (filtered_error > cxt->max_filtered_error [c]) cxt->max_filtered_error [c] = filtered_error;
+                if (filtered_error < cxt->min_filtered_error [c]) cxt->min_filtered_error [c] = filtered_error;
+                *sample_ptr = outsample;
+                cxt->total_samples++;
+#else
                 *sample_ptr = best_sample (sample_ptr, order, cxt->error_feedback [c], cxt->depth);
+#endif
             }
 
             cxt->upsample_buffer_conv++;
@@ -203,8 +259,34 @@ ModulateResult modulateProcess (Modulate *cxt, const float *input, int numInputF
     return res;
 }
 
+#ifdef STATISTICS
+static int64_t called_best_sample, checked_alt_sample, used_alt_sample, leaves;
+#endif
+
 void modulateFree (Modulate *cxt)
 {
+#ifdef STATISTICS
+    if (cxt->total_samples) {
+        cxt->total_samples /= cxt->numChannels;
+        fprintf (stderr, "%ld total samples\n\n", cxt->total_samples);
+
+        for (int c = 0; c < cxt->numChannels; ++c) {
+            fprintf (stderr, "chan %d: RMS noise = %.2f dB unfiltered, %.2f dB filtered, max run of %d\n", c,
+                log10 (cxt->rms_unfiltered_error [c] / cxt->total_samples * 2.0) * 10.0,
+                log10 (cxt->rms_filtered_error [c] / cxt->total_samples * 2.0) * 10.0,
+                cxt->max_run_counts [c]);
+            fprintf (stderr, "         unfiltered error range = %.3f to %.3f\n", cxt->min_unfiltered_error [c], cxt->max_unfiltered_error [c]);
+            fprintf (stderr, "           filtered error range = %.3f to %.3f\n\n", cxt->min_filtered_error [c], cxt->max_filtered_error [c]);
+        }
+
+        if (called_best_sample)
+            fprintf (stderr, "best_sample() checked alternate %ld times (%.1f%%), used alternate %ld times (%.1f%%), %.1f average leaves\n\n",
+                checked_alt_sample, checked_alt_sample * 100.0 / called_best_sample,
+                used_alt_sample, used_alt_sample * 100.0 / called_best_sample,
+                (double) leaves / called_best_sample);
+    }
+#endif
+
     for (int f = 0; f < NUM_FILTERS; ++f)
         free (cxt->upsample_filters [f]);
 
@@ -241,19 +323,23 @@ static double min_error (const float *samples, const float *filter, const float 
         double error_1_0 = SQUARE (+1.0 - sample) + SQUARE (-1.0 - sample_1) + MIN_RMS_ERROR (sample_1_0);
         double error_1_1 = SQUARE (+1.0 - sample) + SQUARE (+1.0 - sample_1) + MIN_RMS_ERROR (sample_1_1);
 
+#ifdef STATISTICS
+        leaves += 4;
+#endif
+
         return fmin (fmin (error_0_0, error_0_1), fmin (error_1_0, error_1_1));
     }
     else {
         double first_sample = (sample < 0.0) ? -1.0 : 1.0;
         double error_sum = SQUARE (first_sample - sample);
 
-        if (error_sum < max_min) {
+        if (NO_PRUNING || error_sum < max_min) {
             float loc_error [] = { first_sample - sample, error [0], error [1] };
             double alt_error_sum = SQUARE (-first_sample - sample);
 
             error_sum += min_error (samples + 1, filter, loc_error, depth - 1, max_min - error_sum);
 
-            if (alt_error_sum < error_sum) {
+            if (NO_PRUNING || alt_error_sum < error_sum) {
                 loc_error [0] = -first_sample - sample;
                 alt_error_sum += min_error (samples + 1, filter, loc_error, depth - 1, error_sum - alt_error_sum);
 
@@ -310,13 +396,21 @@ static double best_sample (const float *samples, double order, float *error, int
 
             error [0] = best_sample - sample;
             error_sum += min_error (samples + 1, filter, error, depth - 1, DBL_MAX);
-
-            if (alt_error_sum < error_sum) {
+#ifdef STATISTICS
+            called_best_sample++;
+#endif
+            if (NO_PRUNING || alt_error_sum < error_sum) {
                 error [0] = -best_sample - sample;
                 alt_error_sum += min_error (samples + 1, filter, error, depth - 1, error_sum - alt_error_sum);
-
-                if (alt_error_sum < error_sum)
+#ifdef STATISTICS
+                checked_alt_sample++;
+#endif
+                if (alt_error_sum < error_sum) {
                     best_sample = -best_sample;
+#ifdef STATISTICS
+                    used_alt_sample++;
+#endif
+                }
             }
          }
     }
