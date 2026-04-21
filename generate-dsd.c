@@ -43,8 +43,7 @@ int read_24bit_samples (FILE *file, float *buffer, int nchans, int samples_to_re
     return samples_read;
 }
 
-#define OUTPUT_SAMPLES  256
-#define INPUT_SAMPLES   256
+#define BUFFER_SAMPLES  256
 
 int main (int argc, char **argv)
 {
@@ -77,32 +76,20 @@ int main (int argc, char **argv)
 
     Modulate *modulator = modulateInit (nchans, depth);
     int64_t total_input_samples = 0, total_output_samples = 0;
-    unsigned char output_buffer [OUTPUT_SAMPLES * nchans];
-    float input_buffer [INPUT_SAMPLES * nchans];
-    int input_exhausted = 0;
+    unsigned char output_buffer [BUFFER_SAMPLES * nchans];
+    float input_buffer [BUFFER_SAMPLES * nchans];
 
-    while (!input_exhausted) {
-        int samples_ready = read_24bit_samples (stdin, input_buffer, nchans, INPUT_SAMPLES);
-        float *input_ptr = input_buffer;
+    while (1) {
+        int samples_read = read_24bit_samples (stdin, input_buffer, nchans, BUFFER_SAMPLES);
+        int output_generated = modulateProcess (modulator, input_buffer, samples_read ? samples_read : -1, output_buffer, BUFFER_SAMPLES);
 
-        input_exhausted = !samples_ready;
+        total_output_samples += output_generated;
+        total_input_samples += samples_read;
 
-        while (1) {
-            ModulateResult res = modulateProcess (modulator, input_ptr, input_exhausted ? -1 : samples_ready, output_buffer, OUTPUT_SAMPLES);
+        fwrite (output_buffer, 1, output_generated * nchans, stdout);
 
-            if (!res.input_used && !res.output_generated)
-                break;
-
-            total_output_samples += res.output_generated;
-            total_input_samples += res.input_used;
-            input_ptr += res.input_used * nchans;
-            samples_ready -= res.input_used;
-
-            fwrite (output_buffer, 1, res.output_generated * nchans, stdout);
-
-            if (!samples_ready && res.output_generated < OUTPUT_SAMPLES)
-                break;
-        }
+        if (!samples_read)
+            break;
     }
 
     fprintf (stderr, "total samples: %ld read, %ld written\n", total_input_samples, total_output_samples);

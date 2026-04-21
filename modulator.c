@@ -120,9 +120,9 @@ Modulate *modulateInit (int numChannels, int depth)
     return cxt;
 }
 
-ModulateResult modulateProcess (Modulate *cxt, const float *input, int numInputFrames, unsigned char *output, int numOutputFrames)
+int modulateProcess (Modulate *cxt, const float *input, int numInputFrames, unsigned char *output, int numOutputFrames)
 {
-    ModulateResult res = { 0, 0 };
+    int output_generated = 0;
 
     if (cxt->flags & MODULATOR_FLUSHED)
         numInputFrames = 0;
@@ -167,7 +167,6 @@ ModulateResult modulateProcess (Modulate *cxt, const float *input, int numInputF
 
                 cxt->source_buffer_head++;
                 numInputFrames--;
-                res.input_used++;
             }
             else
                 break;
@@ -287,12 +286,12 @@ ModulateResult modulateProcess (Modulate *cxt, const float *input, int numInputF
             }
 
             cxt->upsample_buffer_tail += 8;
-            res.output_generated++;
+            output_generated++;
             numOutputFrames--;
         }
     }
 
-    return res;
+    return output_generated;
 }
 
 #ifdef STATISTICS
@@ -372,9 +371,9 @@ static double min_error (const float *samples, const float *filter, const float 
         double sample_1 = sample_0 + filter [0] * 2.0;
 
         double sample_0_0 = samples [2] + ((-1.0 - sample_0) * filter [0]) + ((-1.0 - sample) * filter [1]) + (error [0] * filter [2]);
-        double sample_0_1 = samples [2] + ((+1.0 - sample_0) * filter [0]) + ((-1.0 - sample) * filter [1]) + (error [0] * filter [2]);
+        double sample_0_1 = sample_0_0 + filter [0] * 2.0;
         double sample_1_0 = samples [2] + ((-1.0 - sample_1) * filter [0]) + ((+1.0 - sample) * filter [1]) + (error [0] * filter [2]);
-        double sample_1_1 = samples [2] + ((+1.0 - sample_1) * filter [0]) + ((+1.0 - sample) * filter [1]) + (error [0] * filter [2]);
+        double sample_1_1 = sample_1_0 + filter [0] * 2.0;
 
         double error_0_0 = SQUARE (-1.0 - sample) + SQUARE (-1.0 - sample_0) + MIN_RMS_ERROR (sample_0_0);
         double error_0_1 = SQUARE (-1.0 - sample) + SQUARE (+1.0 - sample_0) + MIN_RMS_ERROR (sample_0_1);

@@ -29,10 +29,6 @@ typedef struct {
 } DepthShapingConfig;
 
 typedef struct {
-    unsigned int input_used, output_generated;
-} ModulateResult;
-
-typedef struct {
     int numChannels, depth, flags;
     int upsample_buffer_samples, upsample_buffer_fill, upsample_buffer_conv, upsample_buffer_tail;
     int source_buffer_samples, source_buffer_head, source_buffer_tail;
@@ -53,6 +49,6 @@ typedef struct {
 } Modulate;
 
 Modulate *modulateInit (int numChannels, int depth);
-ModulateResult modulateProcess (Modulate *cxt, const float *input, int numInputFrames, unsigned char *output, int numOutputFrames);
+int modulateProcess (Modulate *cxt, const float *input, int numInputFrames, unsigned char *output, int numOutputFrames);
 void modulateFree (Modulate *cxt);
 
