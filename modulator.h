@@ -25,6 +25,10 @@
 #define MODULATOR_FLUSHED   0x2
 
 typedef struct {
+    float initial_order, transition_level, final_order, slope;
+} DepthShapingConfig;
+
+typedef struct {
     unsigned int input_used, output_generated;
 } ModulateResult;
 
@@ -32,7 +36,8 @@ typedef struct {
     int numChannels, depth, flags;
     int upsample_buffer_samples, upsample_buffer_fill, upsample_buffer_conv, upsample_buffer_tail;
     int source_buffer_samples, source_buffer_head, source_buffer_tail;
-    float *upsample_filters [NUM_FILTERS], order;
+    float *upsample_filters [NUM_FILTERS];
+    DepthShapingConfig *shaping_config;
     uint32_t *tpdf_generators;
 
     float **source_buffers, **upsample_buffers, **error_feedback;

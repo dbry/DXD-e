@@ -17,6 +17,8 @@
 #define NO_PRUNING  0
 #endif
 
+#define DEPTH_TERM  2       // tree search is terminated at this depth
+
 // Higher-order noise shaping filters (i.e., above 2nd-order) become unstable,
 // especially with higher levels. Increasing look-ahead helps, but we still need
 // to soft-clip and dynamically reduce the order of the noise-shaping filter above
@@ -24,14 +26,42 @@
 // beyond this, and of course this code is designed to produce reasonable results
 // with arbitrary PCM input.
 
-#define SOFT_CLIP   0.72                // we soft-clip above +3.1 dB SACD level, and also start reducing noise-shaping here
-#define HARD_CLIP   0.86                // we hard clip full-scale PCM to here, and also do pure 2nd-order noise-shaping here
-#define MIN_ORDER   2.00                // 2nd-order is minimum noise-shaping filter
-#define MAX_ORDER   3.00                // 3rd-order is maximum noise-shaping filter
+#define SOFT_CLIP   0.72                // we soft-clip above +3.1 dB SACD level
+#define HARD_CLIP   0.86                // we hard clip full-scale PCM to here
 
 static void init_filter (int numTaps, float *filter, double fraction);
 static inline double apply_filter (float *A, float *B, int num_taps);
 static double best_sample (const float *samples, double order, float *error, int depth);
+
+// This table was determined empirically. When supplied a 1 kHz sine ramping linearly to full scale
+// (which gets soft-clipped to 0.86), the maximum run length should be no greater than 18 bits (except in
+// the case of depth = 0). Depths of 0 and 1 are NOT recommended (and not that much faster). The minimum
+// depth for reasonably high quality is 4-5, with 8 and higher being optimal (especially in cases where
+// the level exceeds 0 dB SACD).
+
+static DepthShapingConfig DepthShapingConfigs [] = {
+    { 2.40, 0.40, 2.00  },   // depth = 0
+    { 2.60, 0.40, 2.00  },   // depth = 1
+    { 2.75, 0.40, 2.30  },   // depth = 2
+    { 2.85, 0.40, 2.50  },   // depth = 3
+    { 3.00, 0.40, 2.60  },   // depth = 4
+    { 3.00, 0.50, 2.70  },   // depth = 5
+    { 3.00, 0.60, 2.75  },   // depth = 6
+    { 3.00, 0.66, 2.80  },   // depth = 7
+    { 3.00, 0.72, 2.825 },   // depth = 8
+    { 3.00, 0.74, 2.85  },   // depth = 9
+    { 3.00, 0.76, 2.875 },   // depth = 10
+    { 3.00, 0.78, 2.90  },   // depth = 11
+    { 3.00, 0.80, 2.925 },   // depth = 12
+    { 3.00, 0.81, 2.925 },   // depth = 13
+    { 3.00, 0.82, 2.95  },   // depth = 14
+    { 3.00, 0.83, 2.95  },   // depth = 15
+    { 3.00, 0.84, 2.975 },   // depth = 16
+    { 3.00, 0.85, 2.975 },   // depth = 17
+    { 3.00, 0.86, 3.00  },   // depth = 18+ (pure 3rd-order to hard-clip limit)
+};
+
+#define NUM_CONFIG_DEPTHS (sizeof (DepthShapingConfigs) / sizeof (DepthShapingConfigs [0]))
 
 Modulate *modulateInit (int numChannels, int depth)
 {
@@ -40,10 +70,16 @@ Modulate *modulateInit (int numChannels, int depth)
     cxt->numChannels = numChannels;
     cxt->depth = depth;
 
-    cxt->order = MIN_ORDER + (depth * 0.09) + 0.28;     // these constants determined empirically
+    if (depth < NUM_CONFIG_DEPTHS)
+        cxt->shaping_config = DepthShapingConfigs + depth;
+    else
+        cxt->shaping_config = DepthShapingConfigs + NUM_CONFIG_DEPTHS - 1;
 
-    if (cxt->order > MAX_ORDER)
-        cxt->order = MAX_ORDER;
+    if (cxt->shaping_config->transition_level != HARD_CLIP)
+        cxt->shaping_config->slope = (cxt->shaping_config->final_order - cxt->shaping_config->initial_order) /
+            (HARD_CLIP - cxt->shaping_config->transition_level);
+    else
+        cxt->shaping_config->slope = 0.0;
 
     for (int f = 0; f < NUM_FILTERS; ++f) {
         cxt->upsample_filters [f] = calloc (US_TAPS, sizeof (float));
@@ -188,13 +224,13 @@ ModulateResult modulateProcess (Modulate *cxt, const float *input, int numInputF
         while (cxt->upsample_buffer_fill - cxt->upsample_buffer_conv > cxt->depth) {
             for (int c = 0; c < cxt->numChannels; ++c) {
                 float *sample_ptr = cxt->upsample_buffers [c] + cxt->upsample_buffer_conv, sample_max = 0.0;
-                float order = cxt->order;
+                float order = cxt->shaping_config->initial_order;
 
                 for (int i = 0; i <= cxt->depth; ++i)
                     sample_max = fmax (sample_max, fabs (sample_ptr [i]));
 
-                if (sample_max > SOFT_CLIP)
-                    order -= (sample_max - SOFT_CLIP) / (HARD_CLIP - SOFT_CLIP) * (order - 2.0);
+                if (sample_max > cxt->shaping_config->transition_level)
+                    order += (sample_max - cxt->shaping_config->transition_level) * cxt->shaping_config->slope;
 
 #ifdef STATISTICS
                 float outsample = best_sample (sample_ptr, order, cxt->error_feedback [c], cxt->depth);
@@ -309,6 +345,28 @@ static double min_error (const float *samples, const float *filter, const float 
 {
     double sample = samples [0] + (error [0] * filter [0]) + (error [1] * filter [1]) + (error [2] * filter [2]);
 
+#if (DEPTH_TERM == 0)
+    if (depth == 0) {
+#ifdef STATISTICS
+        leaves++;
+#endif
+        return MIN_RMS_ERROR (sample);
+    }
+#endif
+
+#if (DEPTH_TERM == 1)
+    if (depth == 1) {
+        double sample_0 = samples [1] + ((-1.0 - sample) * filter [0]) + (error [0] * filter [1]) + (error [1] * filter [2]);
+        double sample_1 = sample_0 + filter [0] * 2.0;
+
+#ifdef STATISTICS
+        leaves += 2;
+#endif
+        return fmin (SQUARE (-1.0 - sample) + MIN_RMS_ERROR (sample_0), SQUARE (1.0 - sample) + MIN_RMS_ERROR (sample_1));
+    }
+#endif
+
+#if (DEPTH_TERM == 2)
     if (depth == 2) {
         double sample_0 = samples [1] + ((-1.0 - sample) * filter [0]) + (error [0] * filter [1]) + (error [1] * filter [2]);
         double sample_1 = sample_0 + filter [0] * 2.0;
@@ -329,7 +387,9 @@ static double min_error (const float *samples, const float *filter, const float 
 
         return fmin (fmin (error_0_0, error_0_1), fmin (error_1_0, error_1_1));
     }
-    else {
+#endif
+
+    {
         double first_sample = (sample < 0.0) ? -1.0 : 1.0;
         double error_sum = SQUARE (first_sample - sample);
 
