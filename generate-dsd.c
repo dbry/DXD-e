@@ -43,16 +43,18 @@ int read_24bit_samples (FILE *file, float *buffer, int nchans, int samples_to_re
     return samples_read;
 }
 
-#define BUFFER_SAMPLES  256
+#define BUFFER_SAMPLES  1024
 
 int main (int argc, char **argv)
 {
+    int flags = MODULATE_MULTITHREADED;
     int nchans = 2, depth = 4;
 
     if (argc == 1) {
         fprintf (stderr, "Convert raw 24-bit PCM to raw DSD via 8x upsampling + delta-sigma modulation\n");
-        fprintf (stderr, "Usage: generate-dsd <nchans> [<depth>] < 24bit-pcm.raw > 1bit-dsd.raw\n");
+        fprintf (stderr, "Usage: generate-dsd <nchans> [<depth> [s|m]] < 24bit-pcm.raw > 1bit-dsd.raw\n");
         fprintf (stderr, "       <nchans> = 1 to 16 (required), <depth> = 2 to 24 (default = 4)\n");
+        fprintf (stderr, "       s = single-threaded, m = multi-threaded\n");
         return 0;
     }
 
@@ -72,16 +74,25 @@ int main (int argc, char **argv)
             fprintf (stderr, "depth must be 0 to 24!\n");
             return 1;
         }
+
+        if (argc > 3) {
+            if (strlen (argv [3]) == 1 && (*argv [3] == 's' || *argv [3] == 'S'))
+                flags &= ~MODULATE_MULTITHREADED;
+            else if (strlen (argv [3]) == 1 && (*argv [3] == 'm' || *argv [3] == 'M'))
+                flags |= MODULATE_MULTITHREADED;
+            else
+                fprintf (stderr, "unknown argument: %s\n", argv [3]);
+        }
     }
 
-    Modulate *modulator = modulateInit (nchans, depth);
+    Modulate *modulator = modulateInit (nchans, depth, flags);
     int64_t total_input_samples = 0, total_output_samples = 0;
     unsigned char output_buffer [BUFFER_SAMPLES * nchans];
     float input_buffer [BUFFER_SAMPLES * nchans];
 
     while (1) {
         int samples_read = read_24bit_samples (stdin, input_buffer, nchans, BUFFER_SAMPLES);
-        int output_generated = modulateProcess (modulator, input_buffer, samples_read ? samples_read : -1, output_buffer, BUFFER_SAMPLES);
+        int output_generated = modulateProcess (modulator, input_buffer, samples_read ? samples_read : -1, output_buffer);
 
         total_output_samples += output_generated;
         total_input_samples += samples_read;

@@ -26,12 +26,17 @@
 // beyond this, and of course this code is designed to produce reasonable results
 // with arbitrary PCM input.
 
-#define SOFT_CLIP   0.72                // we soft-clip above +3.1 dB SACD level
-#define HARD_CLIP   0.86                // we hard clip full-scale PCM to here
+#define SOFT_CLIP   0.72F               // we soft-clip above +3.1 dB SACD level
+#define HARD_CLIP   0.86F               // we hard clip full-scale PCM to here
 
 static void init_filter (int numTaps, float *filter, double fraction);
 static inline double apply_filter (float *A, float *B, int num_taps);
+
+#ifdef STATISTICS
+static double best_sample (ModulatorChannel *cxt, const float *samples, double order, float *error, int depth);
+#else
 static double best_sample (const float *samples, double order, float *error, int depth);
+#endif
 
 // This table was determined empirically. When supplied a 1 kHz sine ramping linearly to full scale
 // (which gets soft-clipped to 0.86), the maximum run length should be no greater than 18 bits (except in
@@ -63,120 +68,138 @@ static DepthShapingConfig DepthShapingConfigs [] = {
 
 #define NUM_CONFIG_DEPTHS (sizeof (DepthShapingConfigs) / sizeof (DepthShapingConfigs [0]))
 
-Modulate *modulateInit (int numChannels, int depth)
+Modulate *modulateInit (int numChannels, int depth, int flags)
 {
     Modulate *cxt = calloc (1, sizeof (Modulate));
+    DepthShapingConfig *shaping_config;
+    float **upsample_filters;
 
     cxt->numChannels = numChannels;
-    cxt->depth = depth;
 
     if (depth < NUM_CONFIG_DEPTHS)
-        cxt->shaping_config = DepthShapingConfigs + depth;
+        shaping_config = DepthShapingConfigs + depth;
     else
-        cxt->shaping_config = DepthShapingConfigs + NUM_CONFIG_DEPTHS - 1;
+        shaping_config = DepthShapingConfigs + NUM_CONFIG_DEPTHS - 1;
 
-    if (cxt->shaping_config->transition_level != HARD_CLIP)
-        cxt->shaping_config->slope = (cxt->shaping_config->final_order - cxt->shaping_config->initial_order) /
-            (HARD_CLIP - cxt->shaping_config->transition_level);
+    if (shaping_config->transition_level != HARD_CLIP)
+        shaping_config->slope = (shaping_config->final_order - shaping_config->initial_order) /
+            (HARD_CLIP - shaping_config->transition_level);
     else
-        cxt->shaping_config->slope = 0.0;
+        shaping_config->slope = 0.0;
+
+    upsample_filters = calloc (NUM_FILTERS, sizeof (float*));
 
     for (int f = 0; f < NUM_FILTERS; ++f) {
-        cxt->upsample_filters [f] = calloc (US_TAPS, sizeof (float));
-        init_filter (US_TAPS, cxt->upsample_filters [f], (f + 0.5) / NUM_FILTERS);
+        upsample_filters [f] = calloc (US_TAPS, sizeof (float));
+        init_filter (US_TAPS, upsample_filters [f], (f + 0.5) / NUM_FILTERS);
     }
 
-    cxt->source_buffers = calloc (numChannels, sizeof (float*));
-    cxt->source_buffer_samples = NUM_SAMPLES;
-    cxt->source_buffer_head = US_TAPS / 2;
-    cxt->source_buffer_tail = 0;
-
-    cxt->upsample_buffers = calloc (numChannels, sizeof (float*));
-    cxt->upsample_buffer_samples = NUM_SAMPLES;
-    cxt->upsample_buffer_fill = cxt->upsample_buffer_conv = 0;
-    cxt->upsample_buffer_tail = 4;
-
-    cxt->error_feedback = calloc (numChannels, sizeof (float*));
+    cxt->channels = calloc (numChannels, sizeof (ModulatorChannel));
 
     for (int c = 0; c < numChannels; ++c) {
-        cxt->upsample_buffers [c] = calloc (cxt->upsample_buffer_samples, sizeof (float));
-        cxt->source_buffers [c] = calloc (cxt->source_buffer_samples, sizeof (float));
-        cxt->error_feedback [c] = calloc (3, sizeof (float));
-    }
+        cxt->channels [c].depth = depth;
+        cxt->channels [c].shaping_config = shaping_config;
+        cxt->channels [c].upsample_filters = upsample_filters;
+
+        cxt->channels [c].source_buffer_samples = NUM_SAMPLES;
+        cxt->channels [c].source_buffer = calloc (NUM_SAMPLES, sizeof (float));
+        cxt->channels [c].source_buffer_head = US_TAPS / 2;
+        cxt->channels [c].source_buffer_tail = 0;
+
+        cxt->channels [c].upsample_buffer_samples = NUM_SAMPLES;
+        cxt->channels [c].upsample_buffer = calloc (NUM_SAMPLES, sizeof (float));
+        cxt->channels [c].upsample_buffer_fill = cxt->channels [c].upsample_buffer_conv = 0;
+        cxt->channels [c].upsample_buffer_tail = 4;
 
 #ifdef STATISTICS
-    cxt->rms_filtered_error =   calloc (numChannels, sizeof (double));
-    cxt->rms_unfiltered_error = calloc (numChannels, sizeof (double));
-    cxt->max_filtered_error =   calloc (numChannels, sizeof (double));
-    cxt->max_unfiltered_error = calloc (numChannels, sizeof (double));
-    cxt->min_filtered_error =   calloc (numChannels, sizeof (double));
-    cxt->min_unfiltered_error = calloc (numChannels, sizeof (double));
-    cxt->last_samples =         calloc (numChannels, sizeof (double));
-    cxt->last_samples_peak =    calloc (numChannels, sizeof (double));
-    cxt->max_run_counts =       calloc (numChannels, sizeof (int));
-    cxt->run_counts =           calloc (numChannels, sizeof (int));
+        cxt->channels [c].chan = c;
 #endif
+    }
+
+    if ((flags & MODULATE_MULTITHREADED) && numChannels > 1)
+        cxt->workers = workersInit (numChannels - 1);
 
     return cxt;
 }
 
-int modulateProcess (Modulate *cxt, const float *input, int numInputFrames, unsigned char *output, int numOutputFrames)
+static int modulateProcessChannelJob (void *ptr, void *sync_not_used);
+
+int modulateProcess (Modulate *cxt, const float *input, int numInputFrames, unsigned char *output)
 {
-    int output_generated = 0;
+    for (int c = 0; c < cxt->numChannels; ++c) {
+        cxt->channels [c].input = input + c;
+        cxt->channels [c].numInputFrames = numInputFrames;
+        cxt->channels [c].output = output + c;
+        cxt->channels [c].stride = cxt->numChannels;
+
+        if (cxt->workers)
+            workersEnqueueJob (cxt->workers, modulateProcessChannelJob, cxt->channels + c,
+                c < cxt->numChannels - 1 ? WaitForAvailableWorkerThread : DontUseWorkerThread);
+        else
+            modulateProcessChannelJob (cxt->channels + c, NULL);
+    }
+
+    if (cxt->workers)
+        workersWaitAllJobs (cxt->workers);
+
+    return cxt->channels [0].numOutputFrames;
+}
+
+static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
+{
+    ModulatorChannel *cxt = ptr;
+    cxt->numOutputFrames = 0;
 
     if (cxt->flags & MODULATOR_FLUSHED)
-        numInputFrames = 0;
+        cxt->numInputFrames = 0;
 
-    if (numInputFrames < 0) {
+    if (cxt->numInputFrames < 0) {
         int samples_to_add = US_TAPS / 2 + (cxt->depth + 3) / 8;
 
         if (cxt->source_buffer_head + samples_to_add >= cxt->source_buffer_samples) {
             int samples_to_move = cxt->source_buffer_head - cxt->source_buffer_tail;
 
-            for (int c = 0; c < cxt->numChannels; ++c)
-                memmove (cxt->source_buffers [c], cxt->source_buffers [c] + cxt->source_buffer_tail, samples_to_move * sizeof (float));
-
+            memmove (cxt->source_buffer, cxt->source_buffer + cxt->source_buffer_tail, samples_to_move * sizeof (float));
             cxt->source_buffer_head -= cxt->source_buffer_tail;
             cxt->source_buffer_tail -= cxt->source_buffer_tail;
         }
 
-        for (int c = 0; c < cxt->numChannels; ++c)
-            for (int i = 0; i < samples_to_add; ++i)
-                cxt->source_buffers [c] [cxt->source_buffer_head + i] = cxt->source_buffers [c] [cxt->source_buffer_head - 1];
+        for (int i = 0; i < samples_to_add; ++i)
+            cxt->source_buffer [cxt->source_buffer_head + i] = cxt->source_buffer [cxt->source_buffer_head - 1];
 
         cxt->source_buffer_head += samples_to_add;
         cxt->flags |= MODULATOR_FLUSHED;
     }
 
-    while (numOutputFrames > 0) {
-
+    while (1) {
         if (cxt->source_buffer_tail + US_TAPS > cxt->source_buffer_head) {      // if we don't have enough source data to do anything...
-            if (numInputFrames > 0) {                                           // if we have source samples still...
+            if (cxt->numInputFrames > 0) {                                      // if we have source samples still...
                 if (cxt->source_buffer_head == cxt->source_buffer_samples) {    // if the source buffer is full, shift it left
                     int samples_to_move = cxt->source_buffer_head - cxt->source_buffer_tail;
 
-                    for (int c = 0; c < cxt->numChannels; ++c)
-                        memmove (cxt->source_buffers [c], cxt->source_buffers [c] + cxt->source_buffer_tail, samples_to_move * sizeof (float));
-
+                    memmove (cxt->source_buffer, cxt->source_buffer + cxt->source_buffer_tail, samples_to_move * sizeof (float));
                     cxt->source_buffer_head -= cxt->source_buffer_tail;
                     cxt->source_buffer_tail -= cxt->source_buffer_tail;
                 }
 
-                for (int c = 0; c < cxt->numChannels; ++c)
-                    cxt->source_buffers [c] [cxt->source_buffer_head] = *input++;
+#ifdef STATISTICS
+                if (*cxt->input < cxt->sample_min) cxt->sample_min = *cxt->input;
+                if (*cxt->input > cxt->sample_max) cxt->sample_max = *cxt->input;
+#endif
 
+                cxt->source_buffer [cxt->source_buffer_head] = *cxt->input;
+                cxt->input += cxt->stride;
                 cxt->source_buffer_head++;
-                numInputFrames--;
+                cxt->numInputFrames--;
             }
             else
                 break;
         }
-        else {  // we do have enough source data to generate 8 upsamples
+        else {  // else we do have enough source data to generate 8 upsamples
 
             if (!(cxt->flags & MODULATOR_PREFILLED)) {
-                for (int c = 0; c < cxt->numChannels; ++c)
-                    for (int i = 0; i < US_TAPS / 2; ++i)
-                        cxt->source_buffers [c] [i] = cxt->source_buffers [c] [US_TAPS / 2];
+                for (int i = 0; i < US_TAPS / 2; ++i)
+                    cxt->source_buffer [i] = cxt->source_buffer [US_TAPS / 2];
 
                 cxt->flags |= MODULATOR_PREFILLED;
             }
@@ -184,35 +207,35 @@ int modulateProcess (Modulate *cxt, const float *input, int numInputFrames, unsi
             if (cxt->upsample_buffer_fill + NUM_FILTERS >= cxt->upsample_buffer_samples) {  // if upsample buffer is full...
                 int samples_to_move = cxt->upsample_buffer_fill - cxt->upsample_buffer_tail;
 
-                for (int c = 0; c < cxt->numChannels; ++c)
-                    memmove (cxt->upsample_buffers [c], cxt->upsample_buffers [c] + cxt->upsample_buffer_tail, samples_to_move * sizeof (float));
-
+                memmove (cxt->upsample_buffer, cxt->upsample_buffer + cxt->upsample_buffer_tail, samples_to_move * sizeof (float));
                 cxt->upsample_buffer_fill -= cxt->upsample_buffer_tail;
                 cxt->upsample_buffer_conv -= cxt->upsample_buffer_tail;
                 cxt->upsample_buffer_tail -= cxt->upsample_buffer_tail;
             }
 
             // generate 8 upsamples, and soft-clip if over +3.1 dB SACD
-            for (int c = 0; c < cxt->numChannels; ++c) {
-                float *upsample_ptr = cxt->upsample_buffers [c] + cxt->upsample_buffer_fill;
-                float *source_ptr = cxt->source_buffers [c] + cxt->source_buffer_tail;
+            float *upsample_ptr = cxt->upsample_buffer + cxt->upsample_buffer_fill;
+            float *source_ptr = cxt->source_buffer + cxt->source_buffer_tail;
 
-                for (int f = 0; f < NUM_FILTERS; ++f) {
-                    double result = apply_filter (source_ptr, cxt->upsample_filters [f], US_TAPS);
+            for (int f = 0; f < NUM_FILTERS; ++f) {
+                double result = apply_filter (source_ptr, cxt->upsample_filters [f], US_TAPS);
 
-                    if (fabs (result) > SOFT_CLIP) {
-                        if (result >= 1.00)
-                            *upsample_ptr++ = HARD_CLIP;
-                        else if (result > 0.0)
-                            *upsample_ptr++ = 1.0 - (0.0784 / (result - 0.44));
-                        else if (result <= -1.00)
-                            *upsample_ptr++ = -HARD_CLIP;
-                        else
-                            *upsample_ptr++ = -1.0 - (0.0784 / (result + 0.44));
-                    }
+                if (fabs (result) > SOFT_CLIP) {
+                    if (result >= 1.00)
+                        *upsample_ptr++ = HARD_CLIP;
+                    else if (result > 0.0)
+                        *upsample_ptr++ = 1.0 - (0.0784 / (result - 0.44));
+                    else if (result <= -1.00)
+                        *upsample_ptr++ = -HARD_CLIP;
                     else
-                        *upsample_ptr++ = result;
+                        *upsample_ptr++ = -1.0 - (0.0784 / (result + 0.44));
                 }
+                else
+                    *upsample_ptr++ = result;
+#ifdef STATISTICS
+                if (upsample_ptr [-1] < cxt->upsample_min) cxt->upsample_min = upsample_ptr [-1];
+                if (upsample_ptr [-1] > cxt->upsample_max) cxt->upsample_max = upsample_ptr [-1];
+#endif
             }
 
             cxt->upsample_buffer_fill += NUM_FILTERS;
@@ -221,133 +244,126 @@ int modulateProcess (Modulate *cxt, const float *input, int numInputFrames, unsi
 
         // do the actual SDM here, assuming we have sufficient samples for lookahead depth
         while (cxt->upsample_buffer_fill - cxt->upsample_buffer_conv > cxt->depth) {
-            for (int c = 0; c < cxt->numChannels; ++c) {
-                float *sample_ptr = cxt->upsample_buffers [c] + cxt->upsample_buffer_conv, sample_max = 0.0;
-                float order = cxt->shaping_config->initial_order;
+            float *sample_ptr = cxt->upsample_buffer + cxt->upsample_buffer_conv, sample_max = 0.0;
+            float order = cxt->shaping_config->initial_order;
 
-                for (int i = 0; i <= cxt->depth; ++i)
-                    sample_max = fmax (sample_max, fabs (sample_ptr [i]));
+            for (int i = 0; i <= cxt->depth; ++i)
+                sample_max = fmax (sample_max, fabs (sample_ptr [i]));
 
-                if (sample_max > cxt->shaping_config->transition_level)
-                    order += (sample_max - cxt->shaping_config->transition_level) * cxt->shaping_config->slope;
+            if (sample_max > cxt->shaping_config->transition_level)
+                order += (sample_max - cxt->shaping_config->transition_level) * cxt->shaping_config->slope;
 
 #ifdef STATISTICS
-                float outsample = best_sample (sample_ptr, order, cxt->error_feedback [c], cxt->depth);
-                double filtered_error = outsample - *sample_ptr, unfiltered_error = cxt->error_feedback [c] [0];
+            float outsample = best_sample (cxt, sample_ptr, order, cxt->error_feedback, cxt->depth);
+            double filtered_error = outsample - *sample_ptr, unfiltered_error = cxt->error_feedback [0];
 
-                if (outsample == cxt->last_samples [c]) {
-                    if (++(cxt->run_counts [c]) == 100) {
-                        fprintf (stderr, "\n*** ch %d: value %2g, terminating run of %d, ending at %.6f secs, peak value = %g ***\n\n",
-                            c, outsample, cxt->run_counts [c], (cxt->total_samples / cxt->numChannels) / 2822400.0, cxt->last_samples_peak [c]);
-                        exit (1);
-                    }
-
-                    if (sample_max > cxt->last_samples_peak [c])
-                        cxt->last_samples_peak [c] = sample_max;
-                }
-                else {
-                    if (cxt->run_counts [c] > cxt->max_run_counts [c]) {
-                        cxt->max_run_counts [c] = cxt->run_counts [c];
-                        if (cxt->run_counts [c] >= 20)
-                            fprintf (stderr, "ch %d: value %2g, terminating run of %d, ending at %.6f secs, peak value = %g\n",
-                                c, outsample, cxt->run_counts [c], (cxt->total_samples / cxt->numChannels) / 2822400.0, cxt->last_samples_peak [c]);
-                    }
-
-                    cxt->last_samples_peak [c] = sample_max;
-                    cxt->last_samples [c] = outsample;
-                    cxt->run_counts [c] = 1;
+            if ((*sample_ptr = outsample) == cxt->last_sample) {
+                if (++(cxt->run_count) == 100) {
+                    fprintf (stderr, "\n*** ch %d: value %2g, terminating run of %d, ending at %.6f secs, peak value = %g ***\n\n",
+                        cxt->chan, outsample, cxt->run_count, cxt->total_samples / 2822400.0, cxt->last_sample_peak);
+                    exit (1);
                 }
 
-                cxt->rms_filtered_error [c] += filtered_error * filtered_error;
-                cxt->rms_unfiltered_error [c] += unfiltered_error * unfiltered_error;
-                if (unfiltered_error > cxt->max_unfiltered_error [c]) cxt->max_unfiltered_error [c] = unfiltered_error;
-                if (unfiltered_error < cxt->min_unfiltered_error [c]) cxt->min_unfiltered_error [c] = unfiltered_error;
-                if (filtered_error > cxt->max_filtered_error [c]) cxt->max_filtered_error [c] = filtered_error;
-                if (filtered_error < cxt->min_filtered_error [c]) cxt->min_filtered_error [c] = filtered_error;
-                *sample_ptr = outsample;
-                cxt->total_samples++;
-#else
-                *sample_ptr = best_sample (sample_ptr, order, cxt->error_feedback [c], cxt->depth);
-#endif
+                if (sample_max > cxt->last_sample_peak)
+                    cxt->last_sample_peak = sample_max;
             }
+            else {
+                if (cxt->run_count > cxt->max_run_count) {
+                    cxt->max_run_count = cxt->run_count;
+                    if (cxt->run_count >= 20)
+                        fprintf (stderr, "ch %d: value %2g, terminating run of %d, ending at %.6f secs, peak value = %g\n",
+                            cxt->chan, outsample, cxt->run_count, cxt->total_samples / 2822400.0, cxt->last_sample_peak);
+                }
+
+                cxt->last_sample_peak = sample_max;
+                cxt->last_sample = outsample;
+                cxt->run_count = 1;
+            }
+
+            cxt->rms_filtered_error += filtered_error * filtered_error;
+            cxt->rms_unfiltered_error += unfiltered_error * unfiltered_error;
+            if (unfiltered_error > cxt->max_unfiltered_error) cxt->max_unfiltered_error = unfiltered_error;
+            if (unfiltered_error < cxt->min_unfiltered_error) cxt->min_unfiltered_error = unfiltered_error;
+            if (filtered_error > cxt->max_filtered_error) cxt->max_filtered_error = filtered_error;
+            if (filtered_error < cxt->min_filtered_error) cxt->min_filtered_error = filtered_error;
+            cxt->total_samples++;
+#else
+            *sample_ptr = best_sample (sample_ptr, order, cxt->error_feedback, cxt->depth);
+#endif
 
             cxt->upsample_buffer_conv++;
         }
 
         // while we have whole bytes of DSD data ready, output it
         while (cxt->upsample_buffer_tail + 8 <= cxt->upsample_buffer_conv) {
-            for (int c = 0; c < cxt->numChannels; ++c) {
-                unsigned char dsd = 0;
+            unsigned char dsd = 0;
 
-                for (int b = 0; b < 8; ++b)
-                    dsd = (dsd << 1) | (cxt->upsample_buffers [c] [cxt->upsample_buffer_tail + b] > 0.0);
+            for (int b = 0; b < 8; ++b)
+                dsd = (dsd << 1) | (cxt->upsample_buffer [cxt->upsample_buffer_tail + b] > 0.0);
 
-                *output++ = dsd;
-            }
-
+            *cxt->output = dsd;
+            cxt->output += cxt->stride;
             cxt->upsample_buffer_tail += 8;
-            output_generated++;
-            numOutputFrames--;
+            cxt->numOutputFrames++;
         }
     }
 
-    return output_generated;
+    return 0;
 }
-
-#ifdef STATISTICS
-static int64_t called_best_sample, checked_alt_sample, used_alt_sample, leaves;
-#endif
 
 void modulateFree (Modulate *cxt)
 {
 #ifdef STATISTICS
-    if (cxt->total_samples) {
-        cxt->total_samples /= cxt->numChannels;
-        fprintf (stderr, "%ld total samples\n\n", cxt->total_samples);
+    fprintf (stderr, "%ld total samples\n\n", cxt->channels [0].total_samples);
 
-        for (int c = 0; c < cxt->numChannels; ++c) {
-            fprintf (stderr, "chan %d: RMS noise = %.2f dB unfiltered, %.2f dB filtered, max run of %d\n", c,
-                log10 (cxt->rms_unfiltered_error [c] / cxt->total_samples * 2.0) * 10.0,
-                log10 (cxt->rms_filtered_error [c] / cxt->total_samples * 2.0) * 10.0,
-                cxt->max_run_counts [c]);
-            fprintf (stderr, "         unfiltered error range = %.3f to %.3f\n", cxt->min_unfiltered_error [c], cxt->max_unfiltered_error [c]);
-            fprintf (stderr, "           filtered error range = %.3f to %.3f\n\n", cxt->min_filtered_error [c], cxt->max_filtered_error [c]);
-        }
-
-        if (called_best_sample)
-            fprintf (stderr, "best_sample() checked alternate %ld times (%.1f%%), used alternate %ld times (%.1f%%), %.1f average leaves\n\n",
-                checked_alt_sample, checked_alt_sample * 100.0 / called_best_sample,
-                used_alt_sample, used_alt_sample * 100.0 / called_best_sample,
-                (double) leaves / called_best_sample);
+    for (int c = 0; c < cxt->numChannels; ++c) {
+        fprintf (stderr, "chan %d: RMS noise = %.2f dB unfiltered, %.2f dB filtered, max run of %d\n", c,
+            log10 (cxt->channels [c].rms_unfiltered_error / cxt->channels [c].total_samples * 2.0) * 10.0,
+            log10 (cxt->channels [c].rms_filtered_error / cxt->channels [c].total_samples * 2.0) * 10.0,
+            cxt->channels [c].max_run_count);
+        if (cxt->channels [c].called_best_sample)
+            fprintf (stderr, "        alt checked %.1f%%, alt used %.1f%%, %.1f ave leaves\n",
+                cxt->channels [c].checked_alt_sample * 100.0 / cxt->channels [c].called_best_sample,
+                cxt->channels [c].used_alt_sample * 100.0 / cxt->channels [c].called_best_sample,
+                (double) cxt->channels [c].leaves / cxt->channels [c].called_best_sample);
+        fprintf (stderr, "        PCM input (unclipped) range = %.3f to %.3f\n", cxt->channels [c].sample_min, cxt->channels [c].sample_max);
+        fprintf (stderr, "          upsampled (clipped) range = %.3f to %.3f\n", cxt->channels [c].upsample_min, cxt->channels [c].upsample_max);
+        fprintf (stderr, "             unfiltered error range = %.3f to %.3f\n", cxt->channels [c].min_unfiltered_error, cxt->channels [c].max_unfiltered_error);
+        fprintf (stderr, "               filtered error range = %.3f to %.3f\n\n", cxt->channels [c].min_filtered_error, cxt->channels [c].max_filtered_error);
     }
 #endif
 
-    for (int f = 0; f < NUM_FILTERS; ++f)
-        free (cxt->upsample_filters [f]);
+    if (cxt->workers)
+        workersDeinit (cxt->workers);
 
     for (int c = 0; c < cxt->numChannels; ++c) {
-        free (cxt->upsample_buffers [c]);
-        free (cxt->source_buffers [c]);
-        free (cxt->error_feedback [c]);
+        free (cxt->channels [c].source_buffer);
+        free (cxt->channels [c].upsample_buffer);
     }
 
-    free (cxt->upsample_buffers);
-    free (cxt->source_buffers);
-    free (cxt->error_feedback);
+    for (int f = 0; f < NUM_FILTERS; ++f)
+        free (cxt->channels [0].upsample_filters [f]);
+
+    free (cxt->channels [0].upsample_filters);
+    free (cxt->channels);
     free (cxt);
 }
 
 #define MIN_RMS_ERROR(x)    ((x)*(x) - fabs (2.0*(x)) + 1.0)
 #define SQUARE(x)           ((x)*(x))
 
+#ifdef STATISTICS
+static double min_error (ModulatorChannel *cxt, const float *samples, const float *filter, const float *error, int depth, double max_min)
+#else
 static double min_error (const float *samples, const float *filter, const float *error, int depth, double max_min)
+#endif
 {
     double sample = samples [0] + (error [0] * filter [0]) + (error [1] * filter [1]) + (error [2] * filter [2]);
 
 #if (DEPTH_TERM == 0)
     if (depth == 0) {
 #ifdef STATISTICS
-        leaves++;
+        cxt->leaves++;
 #endif
         return MIN_RMS_ERROR (sample);
     }
@@ -359,7 +375,7 @@ static double min_error (const float *samples, const float *filter, const float 
         double sample_1 = sample_0 + filter [0] * 2.0;
 
 #ifdef STATISTICS
-        leaves += 2;
+        cxt->leaves += 2;
 #endif
         return fmin (SQUARE (-1.0 - sample) + MIN_RMS_ERROR (sample_0), SQUARE (1.0 - sample) + MIN_RMS_ERROR (sample_1));
     }
@@ -381,7 +397,7 @@ static double min_error (const float *samples, const float *filter, const float 
         double error_1_1 = SQUARE (+1.0 - sample) + SQUARE (+1.0 - sample_1) + MIN_RMS_ERROR (sample_1_1);
 
 #ifdef STATISTICS
-        leaves += 4;
+        cxt->leaves += 4;
 #endif
 
         return fmin (fmin (error_0_0, error_0_1), fmin (error_1_0, error_1_1));
@@ -396,12 +412,18 @@ static double min_error (const float *samples, const float *filter, const float 
             float loc_error [] = { first_sample - sample, error [0], error [1] };
             double alt_error_sum = SQUARE (-first_sample - sample);
 
+#ifdef STATISTICS
+            error_sum += min_error (cxt, samples + 1, filter, loc_error, depth - 1, max_min - error_sum);
+#else
             error_sum += min_error (samples + 1, filter, loc_error, depth - 1, max_min - error_sum);
-
+#endif
             if (NO_PRUNING || alt_error_sum < error_sum) {
                 loc_error [0] = -first_sample - sample;
+#ifdef STATISTICS
+                alt_error_sum += min_error (cxt, samples + 1, filter, loc_error, depth - 1, error_sum - alt_error_sum);
+#else
                 alt_error_sum += min_error (samples + 1, filter, loc_error, depth - 1, error_sum - alt_error_sum);
-
+#endif
                 if (alt_error_sum < error_sum)
                     error_sum = alt_error_sum;
             }
@@ -411,7 +433,11 @@ static double min_error (const float *samples, const float *filter, const float 
     }
 }
 
+#ifdef STATISTICS
+static double best_sample (ModulatorChannel *cxt, const float *samples, double order, float *error, int depth)
+#else
 static double best_sample (const float *samples, double order, float *error, int depth)
+#endif
 {
     float filter [] = { -order, 2.0 * order - 3.0, 2.0 - order };
     double sample = samples [0] + (error [0] * filter [0]) + (error [1] * filter [1]) + (error [2] * filter [2]);
@@ -454,20 +480,24 @@ static double best_sample (const float *samples, double order, float *error, int
             double error_sum = SQUARE (best_sample - sample);
 
             error [0] = best_sample - sample;
-            error_sum += min_error (samples + 1, filter, error, depth - 1, DBL_MAX);
 #ifdef STATISTICS
-            called_best_sample++;
+            error_sum += min_error (cxt, samples + 1, filter, error, depth - 1, DBL_MAX);
+            cxt->called_best_sample++;
+#else
+            error_sum += min_error (samples + 1, filter, error, depth - 1, DBL_MAX);
 #endif
             if (NO_PRUNING || alt_error_sum < error_sum) {
                 error [0] = -best_sample - sample;
-                alt_error_sum += min_error (samples + 1, filter, error, depth - 1, error_sum - alt_error_sum);
 #ifdef STATISTICS
-                checked_alt_sample++;
+                alt_error_sum += min_error (cxt, samples + 1, filter, error, depth - 1, error_sum - alt_error_sum);
+                cxt->checked_alt_sample++;
+#else
+                alt_error_sum += min_error (samples + 1, filter, error, depth - 1, error_sum - alt_error_sum);
 #endif
                 if (alt_error_sum < error_sum) {
                     best_sample = -best_sample;
 #ifdef STATISTICS
-                    used_alt_sample++;
+                    cxt->used_alt_sample++;
 #endif
                 }
             }
