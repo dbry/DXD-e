@@ -101,16 +101,15 @@ Modulate *modulateInit (int numChannels, int depth, int flags)
         cxt->channels [c].shaping_config = shaping_config;
         cxt->channels [c].upsample_filters = upsample_filters;
 
-        cxt->channels [c].source_buffer_samples = NUM_SAMPLES;
         cxt->channels [c].source_buffer = calloc (NUM_SAMPLES, sizeof (float));
         cxt->channels [c].source_buffer_head = US_TAPS / 2;
         cxt->channels [c].source_buffer_tail = 0;
 
-        cxt->channels [c].upsample_buffer_samples = NUM_SAMPLES;
         cxt->channels [c].upsample_buffer = calloc (NUM_SAMPLES, sizeof (float));
         cxt->channels [c].upsample_buffer_fill = cxt->channels [c].upsample_buffer_conv = 0;
         cxt->channels [c].upsample_buffer_tail = 4;
 
+        cxt->channels [c].dsd_buffer = calloc (NUM_SAMPLES, sizeof (unsigned char));
 #ifdef STATISTICS
         cxt->channels [c].chan = c;
 #endif
@@ -156,7 +155,7 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
     if (cxt->numInputFrames < 0) {
         int samples_to_add = US_TAPS / 2 + (cxt->depth + 3) / 8;
 
-        if (cxt->source_buffer_head + samples_to_add >= cxt->source_buffer_samples) {
+        if (cxt->source_buffer_head + samples_to_add >= NUM_SAMPLES) {
             int samples_to_move = cxt->source_buffer_head - cxt->source_buffer_tail;
 
             memmove (cxt->source_buffer, cxt->source_buffer + cxt->source_buffer_tail, samples_to_move * sizeof (float));
@@ -174,7 +173,7 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
     while (1) {
         if (cxt->source_buffer_tail + US_TAPS > cxt->source_buffer_head) {      // if we don't have enough source data to do anything...
             if (cxt->numInputFrames > 0) {                                      // if we have source samples still...
-                if (cxt->source_buffer_head == cxt->source_buffer_samples) {    // if the source buffer is full, shift it left
+                if (cxt->source_buffer_head == NUM_SAMPLES) {                   // if the source buffer is full, shift it left
                     int samples_to_move = cxt->source_buffer_head - cxt->source_buffer_tail;
 
                     memmove (cxt->source_buffer, cxt->source_buffer + cxt->source_buffer_tail, samples_to_move * sizeof (float));
@@ -204,10 +203,11 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
                 cxt->flags |= MODULATOR_PREFILLED;
             }
 
-            if (cxt->upsample_buffer_fill + NUM_FILTERS >= cxt->upsample_buffer_samples) {  // if upsample buffer is full...
+            if (cxt->upsample_buffer_fill + NUM_FILTERS >= NUM_SAMPLES) {       // if upsample buffer is full...
                 int samples_to_move = cxt->upsample_buffer_fill - cxt->upsample_buffer_tail;
 
                 memmove (cxt->upsample_buffer, cxt->upsample_buffer + cxt->upsample_buffer_tail, samples_to_move * sizeof (float));
+                memmove (cxt->dsd_buffer, cxt->dsd_buffer + cxt->upsample_buffer_tail, samples_to_move * sizeof (unsigned char));
                 cxt->upsample_buffer_fill -= cxt->upsample_buffer_tail;
                 cxt->upsample_buffer_conv -= cxt->upsample_buffer_tail;
                 cxt->upsample_buffer_tail -= cxt->upsample_buffer_tail;
@@ -215,7 +215,10 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
 
             // generate 8 upsamples, and soft-clip if over +3.1 dB SACD
             float *upsample_ptr = cxt->upsample_buffer + cxt->upsample_buffer_fill;
+            unsigned char *dsd_ptr = cxt->dsd_buffer + cxt->upsample_buffer_fill;
             float *source_ptr = cxt->source_buffer + cxt->source_buffer_tail;
+            int dsd_data = (((int32_t)(source_ptr [7] * 8388608.0) & 0xff) << 8) |
+                ((int32_t)(source_ptr [8] * 8388608.0) & 0xff);
 
             for (int f = 0; f < NUM_FILTERS; ++f) {
                 double result = apply_filter (source_ptr, cxt->upsample_filters [f], US_TAPS);
@@ -232,6 +235,9 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
                 }
                 else
                     *upsample_ptr++ = result;
+
+                *dsd_ptr++ = (dsd_data >> (11 - f)) & 0x1;
+
 #ifdef STATISTICS
                 if (upsample_ptr [-1] < cxt->upsample_min) cxt->upsample_min = upsample_ptr [-1];
                 if (upsample_ptr [-1] > cxt->upsample_max) cxt->upsample_max = upsample_ptr [-1];
@@ -245,6 +251,7 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
         // do the actual SDM here, assuming we have sufficient samples for lookahead depth
         while (cxt->upsample_buffer_fill - cxt->upsample_buffer_conv > cxt->depth) {
             float *sample_ptr = cxt->upsample_buffer + cxt->upsample_buffer_conv, sample_max = 0.0;
+            unsigned char *dsd_ptr = cxt->dsd_buffer + cxt->upsample_buffer_conv++;
             float order = cxt->shaping_config->initial_order;
 
             for (int i = 0; i <= cxt->depth; ++i)
@@ -257,7 +264,9 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
             float outsample = best_sample (cxt, sample_ptr, order, cxt->error_feedback, cxt->depth);
             double filtered_error = outsample - *sample_ptr, unfiltered_error = cxt->error_feedback [0];
 
-            if ((*sample_ptr = outsample) == cxt->last_sample) {
+            *dsd_ptr |= ((outsample > 0.0) & 1) << 1;
+
+            if (outsample == cxt->last_sample) {
                 if (++(cxt->run_count) == 100) {
                     fprintf (stderr, "\n*** ch %d: value %2g, terminating run of %d, ending at %.6f secs, peak value = %g ***\n\n",
                         cxt->chan, outsample, cxt->run_count, cxt->total_samples / 2822400.0, cxt->last_sample_peak);
@@ -288,10 +297,9 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
             if (filtered_error < cxt->min_filtered_error) cxt->min_filtered_error = filtered_error;
             cxt->total_samples++;
 #else
-            *sample_ptr = best_sample (sample_ptr, order, cxt->error_feedback, cxt->depth);
+            float outsample = best_sample (sample_ptr, order, cxt->error_feedback, cxt->depth);
+            *dsd_ptr |= ((outsample > 0.0) & 1) << 1;
 #endif
-
-            cxt->upsample_buffer_conv++;
         }
 
         // while we have whole bytes of DSD data ready, output it
@@ -299,11 +307,11 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
             unsigned char dsd = 0;
 
             for (int b = 0; b < 8; ++b)
-                dsd = (dsd << 1) | (cxt->upsample_buffer [cxt->upsample_buffer_tail + b] > 0.0);
+                // dsd = (dsd << 1) | (cxt->dsd_buffer [cxt->upsample_buffer_tail++] & 0x1);           // embedded DSD
+                   dsd = (dsd << 1) | ((cxt->dsd_buffer [cxt->upsample_buffer_tail++] & 0x2) >> 1);    // calculated DSD
 
             *cxt->output = dsd;
             cxt->output += cxt->stride;
-            cxt->upsample_buffer_tail += 8;
             cxt->numOutputFrames++;
         }
     }
@@ -337,6 +345,7 @@ void modulateFree (Modulate *cxt)
         workersDeinit (cxt->workers);
 
     for (int c = 0; c < cxt->numChannels; ++c) {
+        free (cxt->channels [c].dsd_buffer);
         free (cxt->channels [c].source_buffer);
         free (cxt->channels [c].upsample_buffer);
     }
