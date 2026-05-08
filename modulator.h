@@ -22,10 +22,12 @@
 #define US_TAPS     16                  // upsample filter number of taps
 #define NS_TAPS     3                   // taps in noise-shaping filter
 #define NUM_SAMPLES 1024
+#define DSD_DELAY   13                  // DSD byte delay line for analysis
 
 #define MODULATE_MULTITHREADED  0x1
 #define MODULATOR_PREFILLED     0x2
 #define MODULATOR_FLUSHED       0x4
+#define MODULATOR_SEND_EMBEDDED 0x8
 
 typedef struct {
     float initial_order, transition_level, final_order, slope;
@@ -43,6 +45,9 @@ typedef struct {
     const float *input;
     int numOutputFrames, numInputFrames, stride, depth;
     unsigned char *output;
+
+    unsigned char dsd_embedded_buffer [DSD_DELAY], dsd_calculated_buffer [DSD_DELAY];
+    int delayed_samples;
 
 #ifdef STATISTICS
     int64_t called_best_sample, checked_alt_sample, used_alt_sample, leaves;

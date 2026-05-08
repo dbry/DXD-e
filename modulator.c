@@ -97,6 +97,8 @@ Modulate *modulateInit (int numChannels, int depth, int flags)
     cxt->channels = calloc (numChannels, sizeof (ModulatorChannel));
 
     for (int c = 0; c < numChannels; ++c) {
+        cxt->channels [c].flags = flags;
+
         cxt->channels [c].depth = depth;
         cxt->channels [c].shaping_config = shaping_config;
         cxt->channels [c].upsample_filters = upsample_filters;
@@ -110,6 +112,7 @@ Modulate *modulateInit (int numChannels, int depth, int flags)
         cxt->channels [c].upsample_buffer_tail = 4;
 
         cxt->channels [c].dsd_buffer = calloc (NUM_SAMPLES, sizeof (unsigned char));
+
 #ifdef STATISTICS
         cxt->channels [c].chan = c;
 #endif
@@ -153,7 +156,7 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
         cxt->numInputFrames = 0;
 
     if (cxt->numInputFrames < 0) {
-        int samples_to_add = US_TAPS / 2 + (cxt->depth + 3) / 8;
+        int samples_to_add = US_TAPS / 2 + (cxt->depth + 3) / 8 + cxt->delayed_samples;
 
         if (cxt->source_buffer_head + samples_to_add >= NUM_SAMPLES) {
             int samples_to_move = cxt->source_buffer_head - cxt->source_buffer_tail;
@@ -236,7 +239,7 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
                 else
                     *upsample_ptr++ = result;
 
-                *dsd_ptr++ = (dsd_data >> (11 - f)) & 0x1;
+                *dsd_ptr++ = (dsd_data >> (11 - f)) & 0x1;      // b.0 of dsd_buffer is embedded DSD
 
 #ifdef STATISTICS
                 if (upsample_ptr [-1] < cxt->upsample_min) cxt->upsample_min = upsample_ptr [-1];
@@ -264,7 +267,7 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
             float outsample = best_sample (cxt, sample_ptr, order, cxt->error_feedback, cxt->depth);
             double filtered_error = outsample - *sample_ptr, unfiltered_error = cxt->error_feedback [0];
 
-            *dsd_ptr |= ((outsample > 0.0) & 1) << 1;
+            *dsd_ptr |= ((outsample > 0.0) & 1) << 1;           // b.1 of dsd_buffer is calculated DSD sample
 
             if (outsample == cxt->last_sample) {
                 if (++(cxt->run_count) == 100) {
@@ -298,21 +301,32 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
             cxt->total_samples++;
 #else
             float outsample = best_sample (sample_ptr, order, cxt->error_feedback, cxt->depth);
-            *dsd_ptr |= ((outsample > 0.0) & 1) << 1;
+            *dsd_ptr |= ((outsample > 0.0) & 1) << 1;           // b.1 of dsd_buffer is calculated DSD sample
 #endif
         }
 
         // while we have whole bytes of DSD data ready, output it
         while (cxt->upsample_buffer_tail + 8 <= cxt->upsample_buffer_conv) {
-            unsigned char dsd = 0;
+            unsigned char dsd_embedded = 0, dsd_calculated = 0;
+            int bcount = 8;
 
-            for (int b = 0; b < 8; ++b)
-                // dsd = (dsd << 1) | (cxt->dsd_buffer [cxt->upsample_buffer_tail++] & 0x1);           // embedded DSD
-                   dsd = (dsd << 1) | ((cxt->dsd_buffer [cxt->upsample_buffer_tail++] & 0x2) >> 1);    // calculated DSD
+            while (bcount--) {
+                dsd_calculated = (dsd_calculated << 1) | ((cxt->dsd_buffer [cxt->upsample_buffer_tail] & 0x2) >> 1);
+                dsd_embedded = (dsd_embedded << 1) | (cxt->dsd_buffer [cxt->upsample_buffer_tail++] & 0x1);
+            }
 
-            *cxt->output = dsd;
-            cxt->output += cxt->stride;
-            cxt->numOutputFrames++;
+            cxt->dsd_calculated_buffer [cxt->delayed_samples] = dsd_calculated;
+            cxt->dsd_embedded_buffer [cxt->delayed_samples++] = dsd_embedded;
+
+            if (cxt->delayed_samples == DSD_DELAY) {
+                *cxt->output = (cxt->flags & MODULATOR_SEND_EMBEDDED) ? cxt->dsd_embedded_buffer [0] : cxt->dsd_calculated_buffer [0];
+                cxt->output += cxt->stride;
+                cxt->numOutputFrames++;
+
+                memmove (cxt->dsd_calculated_buffer, cxt->dsd_calculated_buffer + 1, DSD_DELAY - 1);
+                memmove (cxt->dsd_embedded_buffer, cxt->dsd_embedded_buffer + 1, DSD_DELAY - 1);
+                cxt->delayed_samples--;
+            }
         }
     }
 
@@ -322,22 +336,23 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
 void modulateFree (Modulate *cxt)
 {
 #ifdef STATISTICS
-    fprintf (stderr, "%ld total samples\n\n", cxt->channels [0].total_samples);
+    fprintf (stderr, "%ld total samples, %.2f seconds\n\n", cxt->channels [0].total_samples, cxt->channels [0].total_samples / 2822400.0);
 
     for (int c = 0; c < cxt->numChannels; ++c) {
+        ModulatorChannel *chan = cxt->channels + c;
         fprintf (stderr, "chan %d: RMS noise = %.2f dB unfiltered, %.2f dB filtered, max run of %d\n", c,
-            log10 (cxt->channels [c].rms_unfiltered_error / cxt->channels [c].total_samples * 2.0) * 10.0,
-            log10 (cxt->channels [c].rms_filtered_error / cxt->channels [c].total_samples * 2.0) * 10.0,
-            cxt->channels [c].max_run_count);
-        if (cxt->channels [c].called_best_sample)
+            log10 (chan->rms_unfiltered_error / chan->total_samples * 2.0) * 10.0,
+            log10 (chan->rms_filtered_error / chan->total_samples * 2.0) * 10.0,
+            chan->max_run_count);
+        if (chan->called_best_sample)
             fprintf (stderr, "        alt checked %.1f%%, alt used %.1f%%, %.1f ave leaves\n",
-                cxt->channels [c].checked_alt_sample * 100.0 / cxt->channels [c].called_best_sample,
-                cxt->channels [c].used_alt_sample * 100.0 / cxt->channels [c].called_best_sample,
-                (double) cxt->channels [c].leaves / cxt->channels [c].called_best_sample);
-        fprintf (stderr, "        PCM input (unclipped) range = %.3f to %.3f\n", cxt->channels [c].sample_min, cxt->channels [c].sample_max);
-        fprintf (stderr, "          upsampled (clipped) range = %.3f to %.3f\n", cxt->channels [c].upsample_min, cxt->channels [c].upsample_max);
-        fprintf (stderr, "             unfiltered error range = %.3f to %.3f\n", cxt->channels [c].min_unfiltered_error, cxt->channels [c].max_unfiltered_error);
-        fprintf (stderr, "               filtered error range = %.3f to %.3f\n\n", cxt->channels [c].min_filtered_error, cxt->channels [c].max_filtered_error);
+                chan->checked_alt_sample * 100.0 / chan->called_best_sample,
+                chan->used_alt_sample * 100.0 / chan->called_best_sample,
+                (double) chan->leaves / chan->called_best_sample);
+        fprintf (stderr, "        PCM input (unclipped) range = %.3f to %.3f\n", chan->sample_min, chan->sample_max);
+        fprintf (stderr, "          upsampled (clipped) range = %.3f to %.3f\n", chan->upsample_min, chan->upsample_max);
+        fprintf (stderr, "             unfiltered error range = %.3f to %.3f\n", chan->min_unfiltered_error, chan->max_unfiltered_error);
+        fprintf (stderr, "               filtered error range = %.3f to %.3f\n\n", chan->min_filtered_error, chan->max_filtered_error);
     }
 #endif
 
