@@ -12,7 +12,13 @@
 
 static void extrapolate_pcm (int32_t *samples, int samples_to_extrapolate, int samples_visible, int num_channels);
 
-void *decimate_dsd_init (int num_channels)
+// Lowpass, Sample rate = 352800, Fc = 44100, Q = 0.875
+static BiquadCoefficients lowpass_filter = {
+    0.10430216888580293, 0.20860433777160586, 0.10430216888580293, 0.0, 0.0,
+    -1.007230842836138, 0.4244395183793498, 0.0, 0.0
+};
+
+void *decimate_dsd_init (int num_channels, int flags)
 {
     DecimationContext *context = (DecimationContext *)malloc (sizeof (DecimationContext));
     double filter_sum = 0, filter_scale;
@@ -23,12 +29,7 @@ void *decimate_dsd_init (int num_channels)
 
     memset (context, 0, sizeof (*context));
     context->num_channels = num_channels;
-    context->chans = (DecimationChannel *)malloc (num_channels * sizeof (DecimationChannel));
-
-    if (!context->chans) {
-        free (context);
-        return NULL;
-    }
+    context->flags = flags;
 
     for (i = 0; i < NUM_FILTER_TERMS; ++i)
         filter_sum += decm_filter [i];
@@ -47,6 +48,15 @@ void *decimate_dsd_init (int num_channels)
         }
     }
 
+    if (num_channels) {
+        context->chans = (DecimationChannel *)malloc (num_channels * sizeof (DecimationChannel));
+
+        if (!context->chans) {
+            free (context);
+            return NULL;
+        }
+    }
+
     decimate_dsd_reset (context);
 
     return context;
@@ -60,60 +70,16 @@ void decimate_dsd_reset (void *decimate_context)
     if (!context)
         return;
 
-    for (chan = 0; chan < context->num_channels; ++chan)
+    for (chan = 0; chan < context->num_channels; ++chan) {
+        if (context->flags & DECIMATE_LOWPASS)
+            biquad_init (&context->chans [chan].lowpass_filter, &lowpass_filter, 1.0);
+
         for (i = 0; i < HISTORY_BYTES; ++i)
             context->chans [chan].delay [i] = 0x55;
+    }
 
     context->reset = 1;
 }
-
-#if 0   // obsolete version with implicit delay
-
-void decimate_dsd_run (void *decimate_context, int32_t *out_samples, unsigned char *in_samples, int num_samples)
-{
-    DecimationContext *context = (DecimationContext *) decimate_context;
-    int chan = 0, scount = num_samples;
-    int32_t *outsamptr = out_samples;
-
-    if (!context)
-        return;
-
-    while (scount) {
-        DecimationChannel *sp = context->chans + chan;
-        int32_t sum = 0;
-
-#if (HISTORY_BYTES == 7)
-        sum += context->conv_tables [0] [sp->delay [0] = sp->delay [1]];
-        sum += context->conv_tables [1] [sp->delay [1] = sp->delay [2]];
-        sum += context->conv_tables [2] [sp->delay [2] = sp->delay [3]];
-        sum += context->conv_tables [3] [sp->delay [3] = sp->delay [4]];
-        sum += context->conv_tables [4] [sp->delay [4] = sp->delay [5]];
-        sum += context->conv_tables [5] [sp->delay [5] = sp->delay [6]];
-        sum += context->conv_tables [6] [sp->delay [6] = *in_samples++];
-#else
-        int i;
-
-        for (i = 0; i < HISTORY_BYTES-1; ++i)
-            sum += context->conv_tables [i] [sp->delay [i] = sp->delay [i+1]];
-
-        sum += context->conv_tables [i] [sp->delay [i] = *in_samples++];
-#endif
-
-        *outsamptr++ = (sum + 8) >> 4;
-
-        if (++chan == context->num_channels) {
-            scount--;
-            chan = 0;
-        }
-    }
-
-    if (context->reset) {
-        extrapolate_pcm (out_samples, HISTORY_BYTES - 1, num_samples, context->num_channels);
-        context->reset = 0;
-    }
-}
-
-#endif
 
 int decimate_dsd_run (void *decimate_context, const unsigned char *in_samples, int numInputFrames, int32_t *out_samples)
 {
@@ -156,7 +122,12 @@ int decimate_dsd_run (void *decimate_context, const unsigned char *in_samples, i
         sum += context->conv_tables [i] [sp->delay [i] = *in_samples++];
 #endif
 
-        *outsamptr++ = sp->last_sample = (sum + 8) >> 4;
+        if (context->flags & DECIMATE_LOWPASS) {
+            float fsample = biquad_apply_sample (&sp->lowpass_filter, sum / 134217728.0);
+            *outsamptr++ = sp->last_sample = (int32_t) floor (fsample * 8388608.0);
+        }
+        else
+            *outsamptr++ = sp->last_sample = (sum + 8) >> 4;
 
         if (++chan == context->num_channels) {
             scount--;
@@ -172,6 +143,30 @@ int decimate_dsd_run (void *decimate_context, const unsigned char *in_samples, i
     }
 
     return numInputFrames;
+}
+
+int32_t decimate_single_sample (void *decimate_context, const unsigned char in_samples [HISTORY_BYTES])
+{
+    DecimationContext *context = (DecimationContext *) decimate_context;
+
+#if (HISTORY_BYTES == 7)
+    int32_t sum =
+        context->conv_tables [0] [in_samples [0]] +
+        context->conv_tables [1] [in_samples [1]] +
+        context->conv_tables [2] [in_samples [2]] +
+        context->conv_tables [3] [in_samples [3]] +
+        context->conv_tables [4] [in_samples [4]] +
+        context->conv_tables [5] [in_samples [5]] +
+        context->conv_tables [6] [in_samples [6]];
+#else
+    int32_t sum = 0;
+    int i;
+
+    for (i = 0; i < HISTORY_BYTES; ++i)
+        sum += context->conv_tables [i] in_samples [i];
+#endif
+
+    return (sum + 8) >> 4;
 }
 
 // This function is used to linearly extrapolate some samples at the beginning of the first

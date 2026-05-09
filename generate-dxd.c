@@ -8,7 +8,7 @@
 #include "biquad.h"
 
 #define PILOT_SEQUENCE 0xf123456789abcde0
-#define RANDOM_SHIFTER_JUMPS
+// #define RANDOM_SHIFTER_JUMPS
 #define INCLUDE_PILOT
 
 static void dsd_embed_run (void *embed_context, int32_t *dst_buffer, unsigned char *src_buffer, int nsamples);
@@ -22,14 +22,16 @@ int main (int argc, char **argv)
     int64_t total_dsd_samples = 0, total_pcm_samples = 0;
     int source_head = 0, decimate_tail = 0, embed_tail = 0;
     void *dsd_decimator, *dsd_embedder = NULL;
-    int nchans = 2, embed_dsd = 0;
+    int nchans = 2, embed_dsd = 0, filter = 0;
     unsigned char *src_buffer;
     int32_t *dst_buffer;
 
     if (argc == 1) {
         fprintf (stderr, "Convert raw DSD to raw 24-bit DXD via 8x decimation, embed source DSD\n");
-        fprintf (stderr, "Usage: generate-dxd <nchans> [<depth>] < 1bit-dsd.raw > 24bit-dxd.raw\n");
-        fprintf (stderr, "       <nchans> = 1 to 16 (required), [E|e] to embed source DSD\n");
+        fprintf (stderr, "Usage: generate-dxd <nchans> [E|e] [F|f] < 1bit-dsd.raw > 24bit-dxd.raw\n");
+        fprintf (stderr, "       <nchans> = 1 to 16 (required)\n");
+        fprintf (stderr, "       [E|e] to embed source DSD\n");
+        fprintf (stderr, "       [F|f] for lowpass filter\n");
         return 0;
     }
 
@@ -42,18 +44,21 @@ int main (int argc, char **argv)
         }
     }
 
-    if (argc > 2) {
-       if (!strcmp (argv [2], "e") || !strcmp (argv [2], "E"))
-           embed_dsd = 1;
-       else {
-           fprintf (stderr, "second arg is \"e\" to embed DSD data stream\n");
-           return 1;
-       }
-    }
+    if (argc > 2)
+        for (int argi = 2; argi < argc; ++argi) {
+            if (strlen (argv [argi]) == 1 && (*argv [argi] == 'e' || *argv [argi] == 'E'))
+                embed_dsd = 1;
+            if (strlen (argv [argi]) == 1 && (*argv [argi] == 'f' || *argv [argi] == 'F'))
+                filter = 1;
+            else {
+                fprintf (stderr, "unknown argument: %s\n", argv [argi]);
+                return 1;
+            }
+        }
 
     src_buffer = calloc (sizeof (unsigned char), BUFSAMPLES * nchans);
     dst_buffer = calloc (sizeof (int32_t), BUFSAMPLES * nchans);
-    dsd_decimator = decimate_dsd_init (nchans);
+    dsd_decimator = decimate_dsd_init (nchans, filter ? DECIMATE_LOWPASS : 0);
 
     if (embed_dsd)
         dsd_embedder = dsd_embed_init (nchans);
@@ -200,8 +205,8 @@ static void dsd_embed_run (void *embed_context, int32_t *dst_buffer, unsigned ch
             seed = ((seed << 4) - seed) ^ 1;
             seed = ((seed << 4) - seed) ^ 1;
             seed = ((seed << 4) - seed) ^ 1;
-            int skips = seed >> 26;
 #ifdef RANDOM_SHIFTER_JUMPS
+            int skips = seed >> 26;
             while (skips--)
                 context->shifters [chan] = (context->shifters [chan] << 1) | ((context->shifters [chan] >> 63) & 1);
 #endif

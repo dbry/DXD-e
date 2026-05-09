@@ -14,6 +14,10 @@
 #include <stdio.h>
 #include <math.h>
 
+#include "biquad.h"
+
+#define DECIMATE_LOWPASS    0x1
+
 // 56 term decimation filter
 // < 0.5 dB down at 20 kHz
 // > 100 dB stopband attenuation (fs/12)
@@ -34,17 +38,18 @@ static const int32_t decm_filter [] = {
 
 typedef struct {
     unsigned char delay [HISTORY_BYTES];
+    Biquad lowpass_filter;
     int32_t last_sample;
 } DecimationChannel;
 
 typedef struct {
     int32_t conv_tables [HISTORY_BYTES] [256];
+    int flags, num_channels, reset;
     DecimationChannel *chans;
-    int num_channels, reset;
 } DecimationContext;
 
-void *decimate_dsd_init (int num_channels);
+void *decimate_dsd_init (int num_channels, int flags);
 void decimate_dsd_reset (void *decimate_context);
-// void decimate_dsd_run (void *decimate_context, int32_t *out_samples, unsigned char *in_samples, int num_samples);
 int decimate_dsd_run (void *decimate_context, const unsigned char *in_samples, int numInputFrames, int32_t *out_samples);
+int32_t decimate_single_sample (void *decimate_context, const unsigned char in_samples [HISTORY_BYTES]);
 void decimate_dsd_destroy (void *decimate_context);
