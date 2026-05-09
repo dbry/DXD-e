@@ -85,8 +85,10 @@ int main (int argc, char **argv)
                 flags |= MODULATOR_SEND_EMBEDDED;
             else if (strlen (argv [argi]) == 1 && (*argv [argi] == 'c' || *argv [argi] == 'C'))
                 flags &= ~MODULATOR_SEND_EMBEDDED;
-            else
+            else {
                 fprintf (stderr, "unknown argument: %s\n", argv [argi]);
+                return 1;
+            }
         }
     }
 
