@@ -48,7 +48,7 @@ int main (int argc, char **argv)
         for (int argi = 2; argi < argc; ++argi) {
             if (strlen (argv [argi]) == 1 && (*argv [argi] == 'e' || *argv [argi] == 'E'))
                 embed_dsd = 1;
-            if (strlen (argv [argi]) == 1 && (*argv [argi] == 'f' || *argv [argi] == 'F'))
+            else if (strlen (argv [argi]) == 1 && (*argv [argi] == 'f' || *argv [argi] == 'F'))
                 filter = 1;
             else {
                 fprintf (stderr, "unknown argument: %s\n", argv [argi]);
