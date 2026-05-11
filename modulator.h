@@ -24,10 +24,11 @@
 #define NUM_SAMPLES 1024
 #define DSD_DELAY   13                  // DSD byte delay line for analysis
 
-#define MODULATE_MULTITHREADED  0x1
-#define MODULATOR_PREFILLED     0x2
-#define MODULATOR_FLUSHED       0x4
-#define MODULATOR_SEND_EMBEDDED 0x8
+#define MODULATE_MULTITHREADED      0x1
+#define MODULATOR_PREFILLED         0x2
+#define MODULATOR_FLUSHED           0x4
+#define MODULATOR_SEND_EMBEDDED     0x8
+#define MODULATOR_ALIGN_EMBEDDED    0x10
 
 typedef struct {
     float initial_order, transition_level, final_order, slope;
@@ -37,17 +38,19 @@ typedef struct {
     int flags;
     int upsample_buffer_fill, upsample_buffer_conv, upsample_buffer_tail;
     int source_buffer_head, source_buffer_tail;
-    float *source_buffer, *upsample_buffer, error_feedback [NS_TAPS];
+    float *source_buffer, *upsample_buffer;
+    float last_sample, error_feedback [NS_TAPS];
     unsigned char *dsd_buffer;
     DepthShapingConfig *shaping_config;
     float **upsample_filters;
+    void *decimator;
 
     const float *input;
-    int numOutputFrames, numInputFrames, stride, depth;
+    int numOutputFrames, numInputFrames, stride, depth, chan;
     unsigned char *output;
 
     unsigned char dsd_embedded_buffer [DSD_DELAY], dsd_calculated_buffer [DSD_DELAY];
-    int delayed_samples;
+    int delayed_samples, plus_error_count, minus_error_count, large_error_count, phase_locked;
 
 #ifdef STATISTICS
     int64_t called_best_sample, checked_alt_sample, used_alt_sample, leaves;
@@ -55,8 +58,8 @@ typedef struct {
     double rms_filtered_error, rms_unfiltered_error;
     double max_filtered_error, max_unfiltered_error;
     double min_filtered_error, min_unfiltered_error;
-    double last_sample, last_sample_peak;
-    int max_run_count, run_count, chan;
+    double last_sample_peak;
+    int max_run_count, run_count;
     int64_t total_samples;
 #endif
 } ModulatorChannel;

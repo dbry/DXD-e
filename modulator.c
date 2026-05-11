@@ -9,6 +9,7 @@
 // modulator.c
 
 #include "modulator.h"
+#include "decimator.h"
 
 #ifdef NO_PRUNING
 #undef NO_PRUNING
@@ -73,6 +74,14 @@ Modulate *modulateInit (int numChannels, int depth, int flags)
     Modulate *cxt = calloc (1, sizeof (Modulate));
     DepthShapingConfig *shaping_config;
     float **upsample_filters;
+    void *decimator = NULL;
+
+#ifdef WRITE_ERROR_CHAN
+    flags |= MODULATOR_ALIGN_EMBEDDED;
+#endif
+
+    if (flags & MODULATOR_ALIGN_EMBEDDED)
+        decimator = decimate_dsd_init (0, 0);
 
     cxt->numChannels = numChannels;
 
@@ -98,6 +107,7 @@ Modulate *modulateInit (int numChannels, int depth, int flags)
 
     for (int c = 0; c < numChannels; ++c) {
         cxt->channels [c].flags = flags;
+        cxt->channels [c].chan = c;
 
         cxt->channels [c].depth = depth;
         cxt->channels [c].shaping_config = shaping_config;
@@ -112,10 +122,7 @@ Modulate *modulateInit (int numChannels, int depth, int flags)
         cxt->channels [c].upsample_buffer_tail = 4;
 
         cxt->channels [c].dsd_buffer = calloc (NUM_SAMPLES, sizeof (unsigned char));
-
-#ifdef STATISTICS
-        cxt->channels [c].chan = c;
-#endif
+        cxt->channels [c].decimator = decimator;
     }
 
     if ((flags & MODULATE_MULTITHREADED) && numChannels > 1)
@@ -146,6 +153,17 @@ int modulateProcess (Modulate *cxt, const float *input, int numInputFrames, unsi
 
     return cxt->channels [0].numOutputFrames;
 }
+
+static unsigned char xor_images [] = {
+    0x00, 0x04, 0x08, 0x0C,
+    0x10, 0x18,
+    0x20,
+    0x30,
+};
+
+#define NUM_XORS (sizeof (xor_images) / sizeof (xor_images [0]))
+#define SLOW_RATIO   65536.0
+#define FAST_RATIO   256.0
 
 static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
 {
@@ -269,6 +287,11 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
 
             *dsd_ptr |= ((outsample > 0.0) & 1) << 1;           // b.1 of dsd_buffer is calculated DSD sample
 
+            // test synch by periodically resetting DSD encoding
+            // double seconds = cxt->total_samples / 2822400.0;
+            // if ((seconds / 2.0) - floor (seconds / 2.0) == (double) cxt->chan / cxt->stride)
+            //     cxt->error_feedback [0] = cxt->error_feedback [1] = cxt->error_feedback [2] = 0.0;
+
             if (outsample == cxt->last_sample) {
                 if (++(cxt->run_count) == 100) {
                     fprintf (stderr, "\n*** ch %d: value %2g, terminating run of %d, ending at %.6f secs, peak value = %g ***\n\n",
@@ -300,8 +323,8 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
             if (filtered_error < cxt->min_filtered_error) cxt->min_filtered_error = filtered_error;
             cxt->total_samples++;
 #else
-            float outsample = best_sample (sample_ptr, order, cxt->error_feedback, cxt->depth);
-            *dsd_ptr |= ((outsample > 0.0) & 1) << 1;           // b.1 of dsd_buffer is calculated DSD sample
+            cxt->last_sample = best_sample (sample_ptr, order, cxt->error_feedback, cxt->depth);
+            *dsd_ptr |= ((cxt->last_sample > 0.0) & 1) << 1;           // b.1 of dsd_buffer is calculated DSD sample
 #endif
         }
 
@@ -321,7 +344,73 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
             if (cxt->delayed_samples == DSD_DELAY) {
                 *cxt->output = (cxt->flags & MODULATOR_SEND_EMBEDDED) ? cxt->dsd_embedded_buffer [0] : cxt->dsd_calculated_buffer [0];
                 cxt->output += cxt->stride;
+
+#ifndef WRITE_ERROR_CHAN
                 cxt->numOutputFrames++;
+#endif
+
+                if (cxt->flags & MODULATOR_ALIGN_EMBEDDED) {
+                    int32_t calculated_sum = 0, embedded_sum = 0, average_sum, closest_average;
+                    unsigned char dsd_merged_buffer [DSD_DELAY];
+                    int transition_byte = (DSD_DELAY - 1) / 2;
+
+                    for (int i = 0; i < 7; ++i) {
+                        calculated_sum += decimate_single_sample (cxt->decimator, cxt->dsd_calculated_buffer + i);
+                        embedded_sum += decimate_single_sample (cxt->decimator, cxt->dsd_embedded_buffer + i);
+                    }
+
+                    average_sum = (calculated_sum + embedded_sum + 7) / 14;
+                    memcpy (dsd_merged_buffer, cxt->dsd_calculated_buffer, transition_byte);
+                    memcpy (dsd_merged_buffer + transition_byte + 1, cxt->dsd_embedded_buffer + transition_byte + 1, transition_byte);
+
+                    for (int xor_index = 0; xor_index < NUM_XORS; xor_index++) {
+                        int32_t merged_sum = 0, merged_average;
+
+                        dsd_merged_buffer [transition_byte] = (cxt->dsd_calculated_buffer [transition_byte] & 0xF0) | (cxt->dsd_embedded_buffer [transition_byte] & 0x0F);
+                        dsd_merged_buffer [transition_byte] ^= xor_images [xor_index];
+
+                        for (int i = 0; i < 7; ++i)
+                            merged_sum += decimate_single_sample (cxt->decimator, dsd_merged_buffer + i);
+
+                        merged_average = (merged_sum + 3) / 7;
+
+                        if (!xor_index || abs (merged_average - average_sum) < abs (closest_average - average_sum))
+                            closest_average = merged_average;
+                    }
+
+                    if (closest_average < average_sum)
+                        cxt->minus_error_count++;
+                    else if (closest_average > average_sum)
+                        cxt->plus_error_count++;
+
+                    if (abs (closest_average - average_sum) > 325)
+                        cxt->large_error_count++;
+
+                    if (cxt->plus_error_count + cxt->minus_error_count >= 64 && cxt->plus_error_count != cxt->minus_error_count &&
+                        (cxt->plus_error_count > cxt->minus_error_count) == (cxt->last_sample > 0.0)) {
+                            double ratio;
+
+                            if (cxt->large_error_count > 16 || !cxt->plus_error_count || !cxt->minus_error_count)
+                                cxt->phase_locked = 0;
+                            else if (!cxt->phase_locked && cxt->plus_error_count > 26 && cxt->minus_error_count > 26 && cxt->large_error_count < 4)
+                                cxt->phase_locked = 1;
+
+                            ratio = cxt->phase_locked ? SLOW_RATIO : FAST_RATIO;
+                            cxt->plus_error_count = cxt->minus_error_count = cxt->large_error_count = 0;
+                            cxt->error_feedback [0] = cxt->error_feedback [0] - cxt->error_feedback [0] / ratio + cxt->error_feedback [1] / ratio;
+                            cxt->error_feedback [1] = cxt->error_feedback [1] - cxt->error_feedback [1] / ratio + cxt->error_feedback [2] / ratio;
+                            cxt->error_feedback [2] = cxt->error_feedback [2] - cxt->error_feedback [2] / ratio;
+                        }
+
+#ifdef WRITE_ERROR_CHAN
+                    if (cxt->chan == WRITE_ERROR_CHAN) {
+                        int32_t error = closest_average - average_sum;
+                        putchar (error & 0xff);
+                        putchar ((error >> 8) & 0xff);
+                        putchar ((error >> 16) & 0xff);
+                    }
+#endif
+                }
 
                 memmove (cxt->dsd_calculated_buffer, cxt->dsd_calculated_buffer + 1, DSD_DELAY - 1);
                 memmove (cxt->dsd_embedded_buffer, cxt->dsd_embedded_buffer + 1, DSD_DELAY - 1);

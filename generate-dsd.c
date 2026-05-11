@@ -52,9 +52,10 @@ int main (int argc, char **argv)
 
     if (argc == 1) {
         fprintf (stderr, "Convert raw 24-bit PCM to raw DSD via 8x upsampling + delta-sigma modulation\n");
-        fprintf (stderr, "Usage: generate-dsd <nchans> [<depth> [e|c] [s|m]] < 24bit-pcm.raw > 1bit-dsd.raw\n");
+        fprintf (stderr, "Usage: generate-dsd <nchans> [<depth> [e|c] [s|m] [d|a]] < 24bit-pcm.raw > 1bit-dsd.raw\n");
         fprintf (stderr, "       <nchans> = 1 to 16 (required), <depth> = 2 to 24 (default = 4)\n");
         fprintf (stderr, "       e = output embedded DSD, c = output calculated DSD (default)\n");
+        fprintf (stderr, "       d = drift (default allows streams to drift), a = align streams\n");
         fprintf (stderr, "       s = single-threaded, m = multi-threaded (default)\n");
         return 0;
     }
@@ -85,6 +86,10 @@ int main (int argc, char **argv)
                 flags |= MODULATOR_SEND_EMBEDDED;
             else if (strlen (argv [argi]) == 1 && (*argv [argi] == 'c' || *argv [argi] == 'C'))
                 flags &= ~MODULATOR_SEND_EMBEDDED;
+            else if (strlen (argv [argi]) == 1 && (*argv [argi] == 'a' || *argv [argi] == 'A'))
+                flags |= MODULATOR_ALIGN_EMBEDDED;
+            else if (strlen (argv [argi]) == 1 && (*argv [argi] == 'd' || *argv [argi] == 'D'))
+                flags &= ~MODULATOR_ALIGN_EMBEDDED;
             else {
                 fprintf (stderr, "unknown argument: %s\n", argv [argi]);
                 return 1;
