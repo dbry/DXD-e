@@ -3,13 +3,12 @@
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
+#include <sys/random.h>
 
 #include "decimator.h"
 #include "biquad.h"
 
 #define PILOT_SEQUENCE 0xf123456789abcde0
-// #define RANDOM_SHIFTER_JUMPS
-#define INCLUDE_PILOT
 
 static void dsd_embed_run (void *embed_context, int32_t *dst_buffer, unsigned char *src_buffer, int nsamples);
 static void dsd_embed_destroy (void *embed_context);
@@ -124,9 +123,10 @@ int main (int argc, char **argv)
 /*------------------------------------------------------------------------------------------------------------------------*/
 
 typedef struct {
-    uint64_t *shifters;
-    Biquad *shapers;
-    float *feedback;
+    uint32_t *parity_shifters;
+    Biquad *noise_shapers;
+    float *noise_feedback;
+    int64_t sample_index;
     int nchans;
 } EmbedContext;
 
@@ -137,9 +137,9 @@ static void *dsd_embed_init (int nchans)
     EmbedContext *context = (EmbedContext *) calloc (1, sizeof (EmbedContext));
 
     context->nchans = nchans;
-    context->shifters = calloc (nchans, sizeof (uint64_t));
-    context->feedback = calloc (nchans, sizeof (float));
-    context->shapers = calloc (nchans, sizeof (Biquad));
+    context->parity_shifters = calloc (nchans, sizeof (uint32_t));
+    context->noise_feedback = calloc (nchans, sizeof (float));
+    context->noise_shapers = calloc (nchans, sizeof (Biquad));
 
 // TRANSFER FUNCTION:
 // nominator:
@@ -156,25 +156,19 @@ static void *dsd_embed_init (int nchans)
 // 	+0.744295543451128 * z^{-4}
 
     for (int i = 0; i < nchans; ++i) {
-        // shaper_init (context->shapers + i, 1.0, -1.9131052389358465, +0.9195804711121185, 0.0, 0.0, +0.0015535122173491456, +0.8929992057512717, 0.0, 0.0); // version 1
-        // shaper_init (context->shapers + i, 1.0, -3.6513540088861856, +5.162094711894004, -3.3528946153001415, +0.8433117656683422, -0.008357070470613955, +0.9052491172813699, 0.0, 0.0); // version 2
-        // shaper_init (context->shapers + i,
-        //     1.0, -3.2394787809861945, +4.224896866596852, -2.6248646851461928, +0.6507166688029212,
-        //     +0.25316696308483166, +1.5779036618342488, +0.2411058793250051, +0.6764611042053907); // version 3
-        shaper_init (context->shapers + i,
+        shaper_init (context->noise_shapers + i,
             1.0, -3.265716689706981, +4.267791696608121, -2.6428195890912085, +0.6509425172718173,
             +0.013993225356330928, +1.64215031498716, +0.03615562742615169, +0.744295543451128); // version 4
-        context->shifters [i] = PILOT_SEQUENCE; 
+        if (getrandom (context->parity_shifters + i, 4, 0) != 4)
+            fprintf (stderr, "getrandom() not working!\n");
     }
 
     return context;
 }
 
 // src_buffer[] is 1-bit DSD (8 bits per integer)
-// dst_buffer[] is 24-bit raw DXD data
+// dst_buffer[] is 24-bit raw DXD data (decimated DSD)
 // DSD data is embedded into DXD data with parity bit and noise-shaping into dst_buffer[]
-
-static uint32_t seed = 0x31415926;
 
 static void dsd_embed_run (void *embed_context, int32_t *dst_buffer, unsigned char *src_buffer, int nsamples)
 {
@@ -182,38 +176,23 @@ static void dsd_embed_run (void *embed_context, int32_t *dst_buffer, unsigned ch
     int chan = 0;
 
     for (int i = 0; i < nsamples * context->nchans; ++i) {
-        float codevalue = dst_buffer [i] - context->feedback [chan];
-        int32_t outvalue;
+        float codevalue = dst_buffer [i] - context->noise_feedback [chan];
+        int32_t outvalue = ((int32_t) codevalue & 0xffffff00) | src_buffer [i];
 
-        context->shifters [chan] = (context->shifters [chan] << 1) | ((context->shifters [chan] >> 63) & 1);
-        outvalue = ((int32_t)codevalue & 0xfffffe00) | src_buffer [i];
-
-#ifdef INCLUDE_PILOT         // include pilot sequence
-        outvalue |= ((__builtin_parity (outvalue) ^ (int32_t) context->shifters [chan]) & 1) << 8;
-#else                        // don't include pilot sequence (always even parity)
-        outvalue |= (__builtin_parity (outvalue) & 1) << 8;
+#ifdef PILOT_SEQUENCE
+        int pilot_parity_bit = (PILOT_SEQUENCE >> (63 - (context->sample_index & 0x3f))) & 1;
+        pilot_parity_bit ^= __builtin_parity (context->parity_shifters [chan] & 0x40001000);
+        context->parity_shifters [chan] = (context->parity_shifters [chan] << 1) | pilot_parity_bit;
+        outvalue ^= (__builtin_parity (outvalue) ^ pilot_parity_bit) << 8;
 #endif
 
-        context->feedback [chan] = biquad_apply_sample (context->shapers + chan, outvalue - codevalue);
+        context->noise_feedback [chan] = biquad_apply_sample (context->noise_shapers + chan, outvalue - codevalue);
         dst_buffer [i] = outvalue;
 
-        seed = ((seed << 4) - seed) ^ 1;
-        seed = ((seed << 4) - seed) ^ 1;
-        seed = ((seed << 4) - seed) ^ 1;
-
-        if (!(seed & 0xfff)) {
-            seed = ((seed << 4) - seed) ^ 1;
-            seed = ((seed << 4) - seed) ^ 1;
-            seed = ((seed << 4) - seed) ^ 1;
-#ifdef RANDOM_SHIFTER_JUMPS
-            int skips = seed >> 26;
-            while (skips--)
-                context->shifters [chan] = (context->shifters [chan] << 1) | ((context->shifters [chan] >> 63) & 1);
-#endif
-        }
-
-        if (++chan == context->nchans)
+        if (++chan == context->nchans) {
+            context->sample_index++;
             chan = 0;
+        }
     }
 }
 
@@ -221,8 +200,9 @@ static void dsd_embed_destroy (void *embed_context)
 {
     EmbedContext *context = (EmbedContext *) embed_context;
 
-    free (context->shapers);
-    free (context->feedback);
+    free (context->parity_shifters);
+    free (context->noise_feedback);
+    free (context->noise_shapers);
     free (context);
 }
 
