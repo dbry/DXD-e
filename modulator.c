@@ -72,7 +72,6 @@ static DepthShapingConfig DepthShapingConfigs [] = {
 Modulate *modulateInit (int numChannels, int depth, int flags)
 {
     Modulate *cxt = calloc (1, sizeof (Modulate));
-    DepthShapingConfig *shaping_config;
     float **upsample_filters;
     void *decimator = NULL;
 
@@ -85,16 +84,15 @@ Modulate *modulateInit (int numChannels, int depth, int flags)
 
     cxt->numChannels = numChannels;
 
-    if (depth < NUM_CONFIG_DEPTHS)
-        shaping_config = DepthShapingConfigs + depth;
-    else
-        shaping_config = DepthShapingConfigs + NUM_CONFIG_DEPTHS - 1;
+    for (int d = 0; d < NUM_CONFIG_DEPTHS; ++d) {
+        DepthShapingConfig *shaping_config = DepthShapingConfigs + d;
 
-    if (shaping_config->transition_level != HARD_CLIP)
-        shaping_config->slope = (shaping_config->final_order - shaping_config->initial_order) /
-            (HARD_CLIP - shaping_config->transition_level);
-    else
-        shaping_config->slope = 0.0;
+        if (shaping_config->transition_level != HARD_CLIP)
+            shaping_config->slope = (shaping_config->final_order - shaping_config->initial_order) /
+                (HARD_CLIP - shaping_config->transition_level);
+        else
+            shaping_config->slope = 0.0;
+    }
 
     upsample_filters = calloc (NUM_FILTERS, sizeof (float*));
 
@@ -106,11 +104,11 @@ Modulate *modulateInit (int numChannels, int depth, int flags)
     cxt->channels = calloc (numChannels, sizeof (ModulatorChannel));
 
     for (int c = 0; c < numChannels; ++c) {
-        cxt->channels [c].flags = flags;
         cxt->channels [c].chan = c;
 
-        cxt->channels [c].depth = depth;
-        cxt->channels [c].shaping_config = shaping_config;
+        modulateSetDepth (cxt, c, depth);
+        modulateSetFlags (cxt, c, flags);
+
         cxt->channels [c].upsample_filters = upsample_filters;
 
         cxt->channels [c].source_buffer = calloc (NUM_SAMPLES, sizeof (float));
@@ -129,6 +127,31 @@ Modulate *modulateInit (int numChannels, int depth, int flags)
         cxt->workers = workersInit (numChannels - 1);
 
     return cxt;
+}
+
+void modulateSetDepth (Modulate *cxt, int channel_number, int depth)
+{
+    ModulatorChannel *cptr = cxt->channels + channel_number;
+
+    if (depth > MAX_DEPTH)
+        depth = MAX_DEPTH;
+
+    if (channel_number < cxt->numChannels) {
+        if (depth < NUM_CONFIG_DEPTHS)
+            cptr->shaping_config = DepthShapingConfigs + depth;
+        else
+            cptr->shaping_config = DepthShapingConfigs + NUM_CONFIG_DEPTHS - 1;
+
+        cptr->depth = depth;
+    }
+}
+
+void modulateSetFlags (Modulate *cxt, int channel_number, int flags)
+{
+    ModulatorChannel *cptr = cxt->channels + channel_number;
+
+    if (channel_number < cxt->numChannels)
+        cptr->flags = flags;
 }
 
 static int modulateProcessChannelJob (void *ptr, void *sync_not_used);
@@ -174,7 +197,7 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
         cxt->numInputFrames = 0;
 
     if (cxt->numInputFrames < 0) {
-        int samples_to_add = US_TAPS / 2 + (cxt->depth + 3) / 8 + cxt->delayed_samples;
+        int samples_to_add = US_TAPS / 2 + (MAX_DEPTH + 3) / 8 + cxt->delayed_samples;
 
         if (cxt->source_buffer_head + samples_to_add >= NUM_SAMPLES) {
             int samples_to_move = cxt->source_buffer_head - cxt->source_buffer_tail;
@@ -270,7 +293,7 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
         }
 
         // do the actual SDM here, assuming we have sufficient samples for lookahead depth
-        while (cxt->upsample_buffer_fill - cxt->upsample_buffer_conv > cxt->depth) {
+        while (cxt->upsample_buffer_fill - cxt->upsample_buffer_conv > MAX_DEPTH) {
             float *sample_ptr = cxt->upsample_buffer + cxt->upsample_buffer_conv, sample_max = 0.0;
             unsigned char *dsd_ptr = cxt->dsd_buffer + cxt->upsample_buffer_conv++;
             float order = cxt->shaping_config->initial_order;

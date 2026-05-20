@@ -23,6 +23,7 @@
 #define NS_TAPS     3                   // taps in noise-shaping filter
 #define NUM_SAMPLES 1024
 #define DSD_DELAY   13                  // DSD byte delay line for analysis
+#define MAX_DEPTH   24
 
 #define MODULATE_MULTITHREADED      0x1
 #define MODULATOR_PREFILLED         0x2
@@ -71,6 +72,8 @@ typedef struct {
 } Modulate;
 
 Modulate *modulateInit (int numChannels, int depth, int flags);
+void modulateSetDepth (Modulate *cxt, int channel_number, int depth);
+void modulateSetFlags (Modulate *cxt, int channel_number, int flags);
 int modulateProcess (Modulate *cxt, const float *input, int numInputFrames, unsigned char *output);
 void modulateFree (Modulate *cxt);
 
