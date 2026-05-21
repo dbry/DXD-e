@@ -51,7 +51,7 @@ typedef struct {
     unsigned char *output;
 
     unsigned char dsd_embedded_buffer [DSD_DELAY], dsd_calculated_buffer [DSD_DELAY];
-    int delayed_samples, plus_error_count, minus_error_count, large_error_count, phase_locked;
+    int delayed_samples, plus_error_count, minus_error_count, large_error_count, phase_locked, unlock_count;
 
 #ifdef STATISTICS
     int64_t called_best_sample, checked_alt_sample, used_alt_sample, leaves;
@@ -60,7 +60,7 @@ typedef struct {
     double max_filtered_error, max_unfiltered_error;
     double min_filtered_error, min_unfiltered_error;
     double last_sample_peak;
-    int max_run_count, run_count;
+    int max_run_count, run_count, align_lock_count;
     int64_t total_samples;
 #endif
 } ModulatorChannel;

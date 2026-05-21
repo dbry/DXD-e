@@ -106,9 +106,11 @@ int main (int argc, char **argv)
         int samples_read = read_24bit_samples (stdin, input_buffer, nchans, BUFFER_SAMPLES);
         int output_generated = modulateProcess (modulator, input_buffer, samples_read ? samples_read : -1, output_buffer);
 
+#ifndef WRITE_ERROR_CHAN
         if (total_output_samples == 0)
             fprintf (stderr, "initial modulator call generated %d samples, implying latency of %d samples\n",
                 output_generated, BUFFER_SAMPLES - output_generated);
+#endif
 
         total_output_samples += output_generated;
         total_input_samples += samples_read;
