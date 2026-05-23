@@ -26,9 +26,8 @@
 #define MAX_DEPTH   24
 
 #define MODULATE_MULTITHREADED      0x1
-#define MODULATOR_PREFILLED         0x2
-#define MODULATOR_FLUSHED           0x4
-#define MODULATOR_SEND_EMBEDDED     0x8
+#define MODULATOR_PREFILLED         0x2     // do not set, internal use only
+#define MODULATOR_FLUSHED           0x4     // do not set, internal use only
 #define MODULATOR_ALIGN_EMBEDDED    0x10
 
 typedef struct {
@@ -48,7 +47,7 @@ typedef struct {
 
     const float *input;
     int numOutputFrames, numInputFrames, stride, depth, chan;
-    unsigned char *output;
+    unsigned char *mod_output, *emb_output;
 
     unsigned char dsd_embedded_buffer [DSD_DELAY], dsd_calculated_buffer [DSD_DELAY];
     int delayed_samples, plus_error_count, minus_error_count, large_error_count, phase_locked, unlock_count;
@@ -74,6 +73,6 @@ typedef struct {
 Modulate *modulateInit (int numChannels, int depth, int flags);
 void modulateSetDepth (Modulate *cxt, int channel_number, int depth);
 void modulateSetFlags (Modulate *cxt, int channel_number, int flags);
-int modulateProcess (Modulate *cxt, const float *input, int numInputFrames, unsigned char *output);
+int modulateProcess (Modulate *cxt, const float *input, int numInputFrames, unsigned char *mod_output, unsigned char *emb_output);
 void modulateFree (Modulate *cxt);
 

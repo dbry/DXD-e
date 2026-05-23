@@ -158,12 +158,13 @@ void modulateSetFlags (Modulate *cxt, int channel_number, int flags)
 
 static int modulateProcessChannelJob (void *ptr, void *sync_not_used);
 
-int modulateProcess (Modulate *cxt, const float *input, int numInputFrames, unsigned char *output)
+int modulateProcess (Modulate *cxt, const float *input, int numInputFrames, unsigned char *mod_output, unsigned char *emb_output)
 {
     for (int c = 0; c < cxt->numChannels; ++c) {
         cxt->channels [c].input = input + c;
         cxt->channels [c].numInputFrames = numInputFrames;
-        cxt->channels [c].output = output + c;
+        if (mod_output) cxt->channels [c].mod_output = mod_output + c;
+        if (emb_output) cxt->channels [c].emb_output = emb_output + c;
         cxt->channels [c].stride = cxt->numChannels;
 
         if (cxt->workers)
@@ -367,8 +368,15 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
             cxt->dsd_embedded_buffer [cxt->delayed_samples++] = dsd_embedded;
 
             if (cxt->delayed_samples == DSD_DELAY) {
-                *cxt->output = (cxt->flags & MODULATOR_SEND_EMBEDDED) ? cxt->dsd_embedded_buffer [0] : cxt->dsd_calculated_buffer [0];
-                cxt->output += cxt->stride;
+                if (cxt->mod_output) {
+                    *cxt->mod_output = cxt->dsd_calculated_buffer [0];
+                    cxt->mod_output += cxt->stride;
+                }
+
+                if (cxt->emb_output) {
+                    *cxt->emb_output = cxt->dsd_embedded_buffer [0];
+                    cxt->emb_output += cxt->stride;
+                }
 
 #ifndef WRITE_ERROR_CHAN
                 cxt->numOutputFrames++;

@@ -48,7 +48,7 @@ int read_24bit_samples (FILE *file, float *buffer, int nchans, int samples_to_re
 int main (int argc, char **argv)
 {
     int flags = MODULATE_MULTITHREADED;
-    int nchans = 2, depth = 4;
+    int nchans = 2, depth = 4, embedded = 0;
 
     if (argc == 1) {
         fprintf (stderr, "Convert raw 24-bit PCM to raw DSD via 8x upsampling + delta-sigma modulation\n");
@@ -83,9 +83,9 @@ int main (int argc, char **argv)
             else if (strlen (argv [argi]) == 1 && (*argv [argi] == 'm' || *argv [argi] == 'M'))
                 flags |= MODULATE_MULTITHREADED;
             else if (strlen (argv [argi]) == 1 && (*argv [argi] == 'e' || *argv [argi] == 'E'))
-                flags |= MODULATOR_SEND_EMBEDDED;
+                embedded = 1;
             else if (strlen (argv [argi]) == 1 && (*argv [argi] == 'c' || *argv [argi] == 'C'))
-                flags &= ~MODULATOR_SEND_EMBEDDED;
+                embedded = 0;
             else if (strlen (argv [argi]) == 1 && (*argv [argi] == 'a' || *argv [argi] == 'A'))
                 flags |= MODULATOR_ALIGN_EMBEDDED;
             else if (strlen (argv [argi]) == 1 && (*argv [argi] == 'd' || *argv [argi] == 'D'))
@@ -104,7 +104,8 @@ int main (int argc, char **argv)
 
     while (1) {
         int samples_read = read_24bit_samples (stdin, input_buffer, nchans, BUFFER_SAMPLES);
-        int output_generated = modulateProcess (modulator, input_buffer, samples_read ? samples_read : -1, output_buffer);
+        int output_generated = modulateProcess (modulator, input_buffer, samples_read ? samples_read : -1,
+            embedded ? NULL : output_buffer, embedded ? output_buffer : NULL);
 
 #ifndef WRITE_ERROR_CHAN
         if (total_output_samples == 0)
