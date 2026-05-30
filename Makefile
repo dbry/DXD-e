@@ -2,7 +2,7 @@
 
 CC := gcc
 
-utils := generate-dsd generate-dxd extract-dsd
+utils := generate-dsd generate-dxd extract-dsd corrupt-dxd
 
 all: $(utils)
 
@@ -15,5 +15,8 @@ generate-dxd: generate-dxd.c decimator.c biquad.c decimator.h biquad.h
 extract-dsd: extract-dsd.c
 	$(CC) -Wall -O2 extract-dsd.c -lm -o extract-dsd
 
+corrupt-dxd: corrupt-dxd.c
+	$(CC) -Wall -O2 corrupt-dxd.c -lm -o corrupt-dxd
+
 clean:
-	rm -f generate-dsd generate-dxd extract-dsd
+	rm -f generate-dsd generate-dxd extract-dsd corrupt-dxd
