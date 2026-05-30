@@ -5,26 +5,38 @@
 #include <math.h>
 
 #define PILOT_SEQUENCE 0xf123456789abcde0
-#define HONOR_PILOT
+#define BUFSAMPLES  4704
 
-#define BUFSAMPLES  1000
+typedef struct {
+    uint64_t channel_shifter, sample_index;
+    uint32_t parity_shifter;
+    char locked;
+} PilotDetectChannel;
 
-static int dsd_extract_run (void *extract_context, int32_t *dst_buffer, int32_t *src_buffer, int nsamples);
-static void dsd_extract_destroy (void *extract_context);
-static void *dsd_extract_init (int nchans);
+typedef struct {
+    uint64_t parity_masks [64];
+    PilotDetectChannel *chans;
+    int nchans;
+} PilotDetect;
+
+static PilotDetect *PilotDetectInit (int nchans);
+static void PilotDetectDestroy (PilotDetect *context);
+static int PilotDetectChannelRun (PilotDetect *context, const int32_t *src_buffer, int chan, int nsamples);
+static int read_24bit_samples (FILE *file, int32_t *buffer, int nchans, int samples_to_read);
 
 int main (int argc, char **argv)
 {
     int total_dsd_samples = 0, total_pcm_samples = 0, valid_dsd_samples = 0;
-    int32_t *src_buffer, *dst_buffer;
-    int index = 0, nchans = 2, ch;
-    void *dsd_extractor;
+    PilotDetect *pilot_detector;
+    unsigned char *dst_buffer;
+    int32_t *src_buffer;
+    int nchans = 2;
 
     if (argc == 1) {
-        fprintf (stderr, "Convert raw 24-bit DXD-e to raw DSD via DSD extraction\n");
+        fprintf (stderr, "Convert raw 24-bit DXD-e to raw DSD via DSD verification/extraction\n");
         fprintf (stderr, "Usage: extract-dsd <nchans> < 24bit-dxd.raw > 1bit-dsd.raw\n");
         fprintf (stderr, "       <nchans> = 1 to 16 (required)\n");
-        fprintf (stderr, " Note: areas with missing or corrupted DSD get silence (0x69)\n");
+        fprintf (stderr, " Note: areas with missing or corrupted DSD get silence (0x69), no modulation\n");
         return 0;
     }
 
@@ -38,66 +50,71 @@ int main (int argc, char **argv)
     }
 
     src_buffer = calloc (sizeof (int32_t), BUFSAMPLES * nchans);
-    dst_buffer = calloc (sizeof (int32_t), BUFSAMPLES * nchans);
-    dsd_extractor = dsd_extract_init (nchans);
+    dst_buffer = calloc (sizeof (char), BUFSAMPLES * nchans);
+    pilot_detector = PilotDetectInit (nchans);
 
-    while ((ch = getchar()) != EOF) {
-        src_buffer [index] = ch & 0xff;
-        src_buffer [index] |= (getchar() & 0xff) << 8;
-        src_buffer [index] |= (getchar() & 0xff) << 16;
-        src_buffer [index] = (src_buffer [index] << 8) >> 8;
-        total_pcm_samples++;
-        index++;
+    while (1) {
+        int samples_read = read_24bit_samples (stdin, src_buffer, nchans, BUFSAMPLES);
 
-        if (index == BUFSAMPLES * nchans) {
-            memcpy (dst_buffer, src_buffer, index * sizeof (dst_buffer [0]));
-            valid_dsd_samples += dsd_extract_run (dsd_extractor, dst_buffer, src_buffer, index / nchans);
+        if (!samples_read)
+            break;
 
-            for (int i = 0; i < index; ++i) {
-                putchar (dst_buffer [i]);
-                total_dsd_samples++;
-            }
+        total_pcm_samples += samples_read * nchans;
 
-            index = 0;
+        for (int c = 0; c < nchans; ++c) {
+            int dsd_valid = PilotDetectChannelRun (pilot_detector, src_buffer, c, samples_read);
+
+            for (int i = 0; i < samples_read; ++i)
+                dst_buffer [(i * nchans) + c] = dsd_valid ? src_buffer [(i * nchans) + c] & 0xff : 0x69;
+
+            if (dsd_valid)
+                valid_dsd_samples += samples_read;
         }
-    }
 
-    if (index) {
-        memcpy (dst_buffer, src_buffer, index * sizeof (dst_buffer [0]));
-        valid_dsd_samples += dsd_extract_run (dsd_extractor, dst_buffer, src_buffer, index / nchans);
-
-        for (int i = 0; i < index; ++i) {
-            putchar (dst_buffer [i]);
-            total_dsd_samples++;
-        }
+        fwrite (dst_buffer, nchans, samples_read, stdout);
+        total_dsd_samples += samples_read * nchans;
     }
 
     fprintf (stderr, "%d total PCM samples, %d total DSD samples, %d were valid\n", total_pcm_samples, total_dsd_samples, valid_dsd_samples);
 
-    dsd_extract_destroy (dsd_extractor);
+    PilotDetectDestroy (pilot_detector);
     free (src_buffer);
     free (dst_buffer);
 
     return 0;
 }
 
+static int read_24bit_samples (FILE *file, int32_t *buffer, int nchans, int samples_to_read)
+{
+    int samples_read = 0;
+
+    while (samples_to_read--) {
+        unsigned char raw_buffer [nchans * 3], *raw_ptr = raw_buffer;
+        int t;
+
+        if ((t = fread (raw_buffer, 3, nchans, file)) != nchans) {
+            return samples_read;
+        }
+
+        for (int c = 0; c < nchans; ++c) {
+            int32_t sample24 = *raw_ptr++ << 8;
+
+            sample24 += *raw_ptr++ << 16;
+            sample24 += *raw_ptr++ << 24;
+            *buffer++ = sample24 >> 8;
+        }
+
+        samples_read++;
+    }
+
+    return samples_read;
+}
+
 /*------------------------------------------------------------------------------------------------------------------------*/
 
-typedef struct {
-    uint64_t channel_shifter, start_index, stop_index;
-    uint32_t parity_shifter;
-    char locked;
-} ExtractChannel;
-
-typedef struct {
-    uint64_t parity_masks [64], sample_index;
-    ExtractChannel *chans;
-    int nchans;
-} ExtractContext;
-
-static void *dsd_extract_init (int nchans)
+PilotDetect *PilotDetectInit (int nchans)
 {
-    ExtractContext *context = (ExtractContext *) calloc (1, sizeof (ExtractContext));
+    PilotDetect *context = (PilotDetect *) calloc (1, sizeof (PilotDetect));
     uint64_t shifter = PILOT_SEQUENCE;
 
     context->nchans = nchans;
@@ -107,83 +124,49 @@ static void *dsd_extract_init (int nchans)
         shifter = (shifter << 1) | ((shifter >> 63) & 1);
     }
 
-    context->chans = calloc (sizeof (ExtractChannel), nchans);
+    context->chans = calloc (sizeof (PilotDetectChannel), nchans);
 
     return context;
 }
 
-static int dsd_extract_run (void *extract_context, int32_t *dst_buffer, int32_t *src_buffer, int nsamples)
+static int PilotDetectChannelRun (PilotDetect *context, const int32_t *src_buffer, int chan, int nsamples)
 {
-    ExtractContext *context = (ExtractContext *) extract_context;
-    int64_t base_index = context->sample_index;
-    int valid_dsd_samples = 0;
-
-    for (int index = 0; index < nsamples * context->nchans; ++index)
-        dst_buffer [index] = 0x69;
+    PilotDetectChannel *chanptr = context->chans + chan;
+    int retval = chanptr->locked;
 
     for (int index = 0; index < nsamples; ++index) {
-        for (int c = 0; c < context->nchans; ++c) {
-            ExtractChannel *chan = context->chans + c;
+        chanptr->parity_shifter = (chanptr->parity_shifter << 1) | __builtin_parity (src_buffer [(index * context->nchans) + chan]);
+        chanptr->channel_shifter = (chanptr->channel_shifter << 1) | __builtin_parity (chanptr->parity_shifter & 0x80002001);
 
-            chan->parity_shifter = (chan->parity_shifter << 1) | __builtin_parity (src_buffer [(index * context->nchans) + c]);
-            chan->channel_shifter = (chan->channel_shifter << 1) | __builtin_parity (chan->parity_shifter & 0x80002001);
-
-            if (chan->locked) {
-                chan->locked = ((chan->locked + 1) & 0x3f) | 0x40;
-                if (chan->channel_shifter != context->parity_masks [chan->locked & 0x3f]) {
-                    chan->stop_index = context->sample_index - 32;
-                    fprintf (stderr, "%d: embedded: %.3f - %.3f\n", c, chan->start_index / 352800.0, chan->stop_index / 352800.0);
-
-                    if (chan->stop_index > base_index) {
-                        int start_index = chan->start_index < base_index ? 0 : chan->start_index - base_index;
-                        int stop_index = chan->stop_index - base_index;
-
-                        for (int i = start_index; i < stop_index; i++) {
-                            dst_buffer [(i * context->nchans) + c] = src_buffer [(i * context->nchans) + c] & 0xff;
-                            valid_dsd_samples++;
-                        }
+        if (chanptr->locked) {
+            chanptr->locked = ((chanptr->locked + 1) & 0x3f) | 0x40;
+            if (chanptr->channel_shifter != context->parity_masks [chanptr->locked & 0x3f]) {
+                fprintf (stderr, "%d:  unlocked: %.4f (%d/%d)\n", chan, chanptr->sample_index / 352800.0, index, nsamples);
+                retval = chanptr->locked = 0;
+            }
+        }
+        else
+            for (int i = 0; i < 64; ++i)
+                if (chanptr->channel_shifter == context->parity_masks [i]) {
+                    if (chanptr->sample_index <= 94) {
+                        fprintf (stderr, "%d: prelocked: %.4f (%d/%d)\n", chan, chanptr->sample_index / 352800.0, index, nsamples);
+                        retval = 1;
                     }
+                    else
+                        fprintf (stderr, "%d:    locked: %.4f (%d/%d)\n", chan, chanptr->sample_index / 352800.0, index, nsamples);
 
-                    chan->locked = 0;
+                    chanptr->locked = i | 0x40;
+                    break;
                 }
-            }
-            else
-                for (int i = 0; i < 64; ++i)
-                    if (chan->channel_shifter == context->parity_masks [i]) {
-                        if (context->sample_index > 94)
-                            chan->start_index = context->sample_index - 32;
-                        else
-                            chan->start_index = 0;
 
-                        fprintf (stderr, "%d:   locked: %.3f\n", c, context->sample_index / 352800.0);
-                        chan->locked = i | 0x40;
-                        break;
-                    }
-        }
-
-        context->sample_index++;
+        chanptr->sample_index++;
     }
 
-    for (int c = 0; c < context->nchans; ++c) {
-        ExtractChannel *chan = context->chans + c;
-
-        if (chan->locked) {
-            int start_index = chan->start_index < base_index ? 0 : chan->start_index - base_index, stop_index = nsamples;
-
-            for (int i = start_index; i < stop_index; i++) {
-                dst_buffer [(i * context->nchans) + c] = src_buffer [(i * context->nchans) + c] & 0xff;
-                valid_dsd_samples++;
-            }
-        }
-    }
-
-    return valid_dsd_samples;
+    return retval;
 }
 
-static void dsd_extract_destroy (void *extract_context)
+static void PilotDetectDestroy (PilotDetect *context)
 {
-    ExtractContext *context = (ExtractContext *) extract_context;
-
     free (context->chans);
     free (context);
 }
