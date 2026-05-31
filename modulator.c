@@ -105,7 +105,7 @@ Modulate *modulateInit (int numChannels, int depth, int flags)
         cxt->channels [c].chan = c;
 
         modulateSetDepth (cxt, c, depth);
-        modulateSetFlags (cxt, c, flags);
+        cxt->channels [c].flags = flags;
 
         cxt->channels [c].upsample_filters = upsample_filters;
 
@@ -144,15 +144,13 @@ void modulateSetDepth (Modulate *cxt, int channel_number, int depth)
     }
 }
 
-void modulateSetFlags (Modulate *cxt, int channel_number, int flags)
+void modulateSetAlignment (Modulate *cxt, int channel_number, int enable)
 {
     ModulatorChannel *cptr = cxt->channels + channel_number;
 
-    if (channel_number < cxt->numChannels) {
-        if ((cptr->flags ^ flags) & MODULATOR_ALIGN_EMBEDDED)
-            cptr->phase_locked = cptr->unlock_count = 0;
-
-        cptr->flags = flags;
+    if (channel_number < cxt->numChannels && cptr->decimator && enable == !(cptr->flags & MODULATOR_ALIGN_EMBEDDED)) {
+        cptr->phase_locked = cptr->unlock_count = 0;
+        cptr->flags ^= MODULATOR_ALIGN_EMBEDDED;
     }
 }
 
@@ -499,6 +497,7 @@ void modulateFree (Modulate *cxt)
     for (int f = 0; f < NUM_FILTERS; ++f)
         free (cxt->channels [0].upsample_filters [f]);
 
+    decimate_dsd_destroy (cxt->channels [0].decimator);
     free (cxt->channels [0].upsample_filters);
     free (cxt->channels);
     free (cxt);

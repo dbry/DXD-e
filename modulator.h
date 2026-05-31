@@ -72,7 +72,7 @@ typedef struct {
 
 Modulate *modulateInit (int numChannels, int depth, int flags);
 void modulateSetDepth (Modulate *cxt, int channel_number, int depth);
-void modulateSetFlags (Modulate *cxt, int channel_number, int flags);
+void modulateSetAlignment (Modulate *cxt, int channel_number, int enable);
 int modulateProcess (Modulate *cxt, const float *input, int numInputFrames, unsigned char *mod_output, unsigned char *emb_output);
 void modulateFree (Modulate *cxt);
 
