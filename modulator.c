@@ -48,24 +48,24 @@ static double best_sample (const float *samples, double order, float *error, int
 // the level exceeds 0 dB SACD).
 
 static DepthShapingConfig DepthShapingConfigs [] = {
-    { 2.40, 0.40, 2.00  },   // depth = 0
-    { 2.60, 0.40, 2.00  },   // depth = 1
-    { 2.75, 0.40, 2.30  },   // depth = 2
-    { 2.85, 0.40, 2.50  },   // depth = 3
-    { 3.00, 0.40, 2.60  },   // depth = 4
-    { 3.00, 0.50, 2.70  },   // depth = 5
-    { 3.00, 0.60, 2.75  },   // depth = 6
-    { 3.00, 0.66, 2.80  },   // depth = 7
-    { 3.00, 0.72, 2.825 },   // depth = 8
-    { 3.00, 0.74, 2.85  },   // depth = 9
-    { 3.00, 0.76, 2.875 },   // depth = 10
-    { 3.00, 0.78, 2.90  },   // depth = 11
-    { 3.00, 0.80, 2.925 },   // depth = 12
-    { 3.00, 0.81, 2.925 },   // depth = 13
-    { 3.00, 0.82, 2.95  },   // depth = 14
-    { 3.00, 0.83, 2.95  },   // depth = 15
-    { 3.00, 0.84, 2.975 },   // depth = 16
-    { 3.00, 0.85, 2.975 },   // depth = 17
+    { 2.16, 0.40, 2.00  },   // depth = 0
+    { 2.36, 0.40, 2.00  },   // depth = 1
+    { 2.56, 0.40, 2.09  },   // depth = 2
+    { 2.72, 0.40, 2.25  },   // depth = 3
+    { 3.00, 0.40, 2.36  },   // depth = 4
+    { 3.00, 0.50, 2.49  },   // depth = 5
+    { 3.00, 0.60, 2.56  },   // depth = 6
+    { 3.00, 0.66, 2.64  },   // depth = 7
+    { 3.00, 0.72, 2.68  },   // depth = 8
+    { 3.00, 0.74, 2.72  },   // depth = 9
+    { 3.00, 0.76, 2.765 },   // depth = 10
+    { 3.00, 0.78, 2.81  },   // depth = 11
+    { 3.00, 0.80, 2.855 },   // depth = 12
+    { 3.00, 0.81, 2.855 },   // depth = 13
+    { 3.00, 0.82, 2.90  },   // depth = 14
+    { 3.00, 0.83, 2.90  },   // depth = 15
+    { 3.00, 0.84, 2.95  },   // depth = 16
+    { 3.00, 0.85, 2.95  },   // depth = 17
     { 3.00, 0.86, 3.00  },   // depth = 18+ (pure 3rd-order to hard-clip limit)
 };
 
@@ -304,6 +304,8 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
 
             if (sample_max > cxt->shaping_config->transition_level)
                 order += (sample_max - cxt->shaping_config->transition_level) * cxt->shaping_config->slope;
+
+            order = floor (order) + sqrt (order - floor (order));
 
 #ifdef STATISTICS
             float outsample = best_sample (cxt, sample_ptr, order, cxt->error_feedback, cxt->depth);
