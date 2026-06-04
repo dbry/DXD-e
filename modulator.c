@@ -311,6 +311,9 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
 
             *dsd_ptr |= ((outsample > 0.0) & 1) << 1;           // b.1 of dsd_buffer is calculated DSD sample
 
+            if (cxt->min_order == 0.0 || order < cxt->min_order) cxt->min_order = order;
+            if (order > cxt->max_order) cxt->max_order = order;
+
             // test synch by periodically resetting DSD encoding
             // double seconds = cxt->total_samples / 2822400.0;
             // if ((seconds / 2.0) - floor (seconds / 2.0) == (double) cxt->chan / cxt->stride)
@@ -467,10 +470,10 @@ void modulateFree (Modulate *cxt)
 
     for (int c = 0; c < cxt->numChannels; ++c) {
         ModulatorChannel *chan = cxt->channels + c;
-        fprintf (stderr, "chan %d: RMS noise = %.2f dB unfiltered, %.2f dB filtered, max run of %d\n", c,
+        fprintf (stderr, "chan %d: RMS noise = %.2f dB unfiltered, %.2f dB filtered, max run %d, order %.3f to %.3f\n", c,
             log10 (chan->rms_unfiltered_error / chan->total_samples * 2.0) * 10.0,
             log10 (chan->rms_filtered_error / chan->total_samples * 2.0) * 10.0,
-            chan->max_run_count);
+            chan->max_run_count, chan->min_order, chan->max_order);
         if (chan->called_best_sample)
             fprintf (stderr, "        alt checked %.1f%%, alt used %.1f%%, %.1f ave leaves\n",
                 chan->checked_alt_sample * 100.0 / chan->called_best_sample,

@@ -39,7 +39,8 @@ typedef struct {
     int upsample_buffer_fill, upsample_buffer_conv, upsample_buffer_tail;
     int source_buffer_head, source_buffer_tail;
     float *source_buffer, *upsample_buffer;
-    float last_sample, error_feedback [NS_TAPS];
+    float last_sample, min_order, max_order;
+    float error_feedback [NS_TAPS];
     unsigned char *dsd_buffer;
     DepthShapingConfig *shaping_config;
     float **upsample_filters;
