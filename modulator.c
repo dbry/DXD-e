@@ -19,6 +19,7 @@
 #endif
 
 // #define ALLOW_DRIFT      // for testing
+#define ENABLE_DITHER
 
 #define DEPTH_TERM  2       // tree search is terminated at this depth
 
@@ -34,11 +35,12 @@
 
 static void init_filter (int numTaps, float *filter, double fraction);
 static inline double apply_filter (float *A, float *B, int num_taps);
+static inline double tpdf_dither (uint32_t *generator);
 
 #ifdef STATISTICS
-static double best_sample (ModulatorChannel *cxt, const float *samples, double order, float *error, int depth);
+static double best_sample (ModulatorChannel *cxt, const float *samples, double order, double *error, int depth);
 #else
-static double best_sample (const float *samples, double order, float *error, int depth);
+static double best_sample (const float *samples, double order, double *error, int depth);
 #endif
 
 // This table was determined empirically. When supplied a 1 kHz sine ramping linearly to full scale
@@ -74,6 +76,7 @@ static DepthShapingConfig DepthShapingConfigs [] = {
 Modulate *modulateInit (int numChannels, int depth, int flags)
 {
     Modulate *cxt = calloc (1, sizeof (Modulate));
+    uint32_t seed = 0x31415926;
     float **upsample_filters;
     void *decimator = NULL;
 
@@ -119,6 +122,9 @@ Modulate *modulateInit (int numChannels, int depth, int flags)
 
         cxt->channels [c].dsd_buffer = calloc (NUM_SAMPLES, sizeof (unsigned char));
         cxt->channels [c].decimator = decimator;
+
+        cxt->channels [c].tpdf_generator = seed;
+        seed = (seed << 1) | ((seed >> 31) & 1);
     }
 
     if ((flags & MODULATE_MULTITHREADED) && numChannels > 1)
@@ -268,6 +274,9 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
             for (int f = 0; f < NUM_FILTERS; ++f) {
                 double result = apply_filter (source_ptr, cxt->upsample_filters [f], US_TAPS);
 
+#ifdef ENABLE_DITHER
+                result += tpdf_dither (&cxt->tpdf_generator) / 65536.0;
+#endif
                 if (fabs (result) > SOFT_CLIP) {
                     if (result >= 1.00)
                         *upsample_ptr++ = HARD_CLIP;
@@ -512,9 +521,9 @@ void modulateFree (Modulate *cxt)
 #define SQUARE(x)           ((x)*(x))
 
 #ifdef STATISTICS
-static double min_error (ModulatorChannel *cxt, const float *samples, const float *filter, const float *error, int depth, double max_min)
+static double min_error (ModulatorChannel *cxt, const float *samples, const double *filter, const double *error, int depth, double max_min)
 #else
-static double min_error (const float *samples, const float *filter, const float *error, int depth, double max_min)
+static double min_error (const float *samples, const double *filter, const double *error, int depth, double max_min)
 #endif
 {
     double sample = samples [0] + (error [0] * filter [0]) + (error [1] * filter [1]) + (error [2] * filter [2]);
@@ -568,7 +577,7 @@ static double min_error (const float *samples, const float *filter, const float 
         double error_sum = SQUARE (first_sample - sample);
 
         if (NO_PRUNING || error_sum < max_min) {
-            float loc_error [] = { first_sample - sample, error [0], error [1] };
+            double loc_error [] = { first_sample - sample, error [0], error [1] };
             double alt_error_sum = SQUARE (-first_sample - sample);
 
 #ifdef STATISTICS
@@ -593,12 +602,12 @@ static double min_error (const float *samples, const float *filter, const float 
 }
 
 #ifdef STATISTICS
-static double best_sample (ModulatorChannel *cxt, const float *samples, double order, float *error, int depth)
+static double best_sample (ModulatorChannel *cxt, const float *samples, double order, double *error, int depth)
 #else
-static double best_sample (const float *samples, double order, float *error, int depth)
+static double best_sample (const float *samples, double order, double *error, int depth)
 #endif
 {
-    float filter [] = { -order, 2.0 * order - 3.0, 2.0 - order };
+    double filter [] = { -order, 2.0 * order - 3.0, 2.0 - order };
     double sample = samples [0] + (error [0] * filter [0]) + (error [1] * filter [1]) + (error [2] * filter [2]);
     double best_sample = (sample < 0.0) ? -1.0 : 1.0;
 
@@ -716,7 +725,7 @@ static void init_filter (int numTaps, float *filter, double fraction)
     }
 }
 
-static double apply_filter (float *A, float *B, int num_taps)
+static inline double apply_filter (float *A, float *B, int num_taps)
 {
     double sum = 0.0;
 
@@ -726,3 +735,17 @@ static double apply_filter (float *A, float *B, int num_taps)
     return sum;
 }
 
+// Return an uncorrelated tpdf random value in the range: -1.0 <= n < 1.0
+
+static inline double tpdf_dither (uint32_t *generator)
+{
+    uint32_t random = *generator, value;
+
+    random = ((random << 4) - random) ^ 1;
+    value = ~(random = ((random << 4) - random) ^ 1) >> 1;
+    random = ((random << 4) - random) ^ 1;
+    random = ((random << 4) - random) ^ 1;
+    value += (*generator = ((random << 4) - random) ^ 1) >> 1;
+
+    return (value / 2147483648.0) - 1.0;
+}
