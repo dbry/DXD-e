@@ -138,8 +138,9 @@ int main (int argc, char **argv)
     fprintf (stderr, "total samples: %ld read, %ld written\n", total_input_samples, total_output_samples);
 
 #ifdef STATISTICS
-    fprintf (stderr, "%d DSD transitions, average absolute error = %.3f, average RMS error = %.3f\n",
-        num_transitions, total_abs_error / num_transitions, total_rms_error / num_transitions);
+    if (num_transitions)
+        fprintf (stderr, "%d DSD transitions, average absolute error = %.3f, average RMS error = %.3f\n",
+            num_transitions, total_abs_error / num_transitions, total_rms_error / num_transitions);
 #endif
 
     modulateFree (modulator);
