@@ -23,6 +23,28 @@
 
 #define DEPTH_TERM  2       // tree search is terminated at this depth
 
+/////////////////////////////////////////////////////////////////////////////////////////
+// The normal operation is the search depth is set with the modulateInit() call (and
+// optionally updated with the modulateSetDepth() call) and is fixed. The appropriate
+// noise shaping filter (up to 3rd order) is continuously selected based on the detected
+// signal level.
+
+// Only ONE of these three alternatives to that scheme are allowed:
+
+// #define FIXED_ORDER 3.0  // For instability testing both filter and search depth are
+                            // fixed (signal level is not calculated nor considered).
+                            // Values over 3.0 require NS_TAPS to be set to 4.
+
+// #define THIRD_ORDER      // Pure 3rd-order shaping (up to +3.1 dB SACD level).
+                            // Search depth starts at 4 and goes up to 8 based on
+                            // detected level (suitable for realtime operation).
+
+// #define FOURTH_ORDER     // Pure 4th-order shaping (up to +3.1 dB SACD level).
+                            // Requires NS_TAPS set to 4. Search depth starts at 12 and
+                            // goes up to 18 based on detected level (which means slow
+                            // to VERY slow).
+/////////////////////////////////////////////////////////////////////////////////////////
+
 // Higher-order noise shaping filters (i.e., above 2nd-order) become unstable,
 // especially with higher levels. Increasing look-ahead helps, but we still need
 // to soft-clip and dynamically reduce the order of the noise-shaping filter above
@@ -307,18 +329,87 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
             float *sample_ptr = cxt->upsample_buffer + cxt->upsample_buffer_conv, sample_max = 0.0;
             unsigned char *dsd_ptr = cxt->dsd_buffer + cxt->upsample_buffer_conv++;
             float order = cxt->shaping_config->initial_order;
+            int depth = cxt->depth;
 
-            for (int i = 0; i <= cxt->depth; ++i)
+#ifdef THIRD_ORDER
+            for (int i = 0; i <= 8; ++i)
+                sample_max = fmax (sample_max, fabs (sample_ptr [i]));
+
+            order = 3.0;
+            depth = 4;
+
+            if (sample_max > 0.40) {
+                depth++;
+
+                if (sample_max > 0.50) {
+                    depth++;
+
+                    if (sample_max > 0.60) {
+                        depth++;
+
+                        if (sample_max > 0.70) {
+                            depth++;
+
+                            if (sample_max > 0.720)
+                                order -= (sample_max - 0.720) / 0.44;
+                        }
+                    }
+                }
+            }
+#elif defined FOURTH_ORDER
+            for (int i = 0; i <= 18; ++i)
+                sample_max = fmax (sample_max, fabs (sample_ptr [i]));
+
+            order = 4.0;
+            depth = 12;
+
+            if (sample_max > 0.40) {
+                depth++;
+
+                if (sample_max > 0.50) {
+                    depth++;
+
+                    if (sample_max > 0.60) {
+                        depth++;
+
+                        if (sample_max > 0.66) {
+                            depth++;
+
+                            if (sample_max > 0.68) {
+                                depth++;
+
+                                if (sample_max > 0.70) {
+                                    depth++;
+
+                                    if (sample_max > 0.720)
+                                        order -= (sample_max - 0.720) / 0.35;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+#elif defined FIXED_ORDER
+            order = FIXED_ORDER;
+#else
+            for (int i = 0; i <= depth; ++i)
                 sample_max = fmax (sample_max, fabs (sample_ptr [i]));
 
             if (sample_max > cxt->shaping_config->transition_level)
                 order += (sample_max - cxt->shaping_config->transition_level) * cxt->shaping_config->slope;
+#endif
 
-            order = floor (order) + sqrt (order - floor (order));
+            order = floor (order) + sqrt (order - floor (order));   // adjust order to be more linear between 2.0 and 4.0
 
 #ifdef STATISTICS
-            float outsample = best_sample (cxt, sample_ptr, order, cxt->error_feedback, cxt->depth);
+            float outsample = best_sample (cxt, sample_ptr, order, cxt->error_feedback, depth);
             double filtered_error = outsample - *sample_ptr, unfiltered_error = cxt->error_feedback [0];
+
+            if (depth > cxt->max_depth_seen) {
+                cxt->max_depth_seen = depth;
+                fprintf (stderr, "ch %d: max depth = %d at %.6f secs, max sample = %.3f, order = %.3f\n",
+                    cxt->chan, depth, cxt->total_samples / 2822400.0, sample_max, order);
+            }
 
             *dsd_ptr |= ((outsample > 0.0) & 1) << 1;           // b.1 of dsd_buffer is calculated DSD sample
 
@@ -332,8 +423,8 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
 
             if (outsample == cxt->last_sample) {
                 if (++(cxt->run_count) == 100) {
-                    fprintf (stderr, "\n*** ch %d: value %2g, terminating run of %d, ending at %.6f secs, peak value = %g ***\n\n",
-                        cxt->chan, outsample, cxt->run_count, cxt->total_samples / 2822400.0, cxt->last_sample_peak);
+                    fprintf (stderr, "\n*** ch %d: value %2g, terminating run of %d, ending at %.6f secs, max sample = %.3f, order = %.3f, depth = %d ***\n\n",
+                        cxt->chan, outsample, cxt->run_count, cxt->total_samples / 2822400.0, sample_max, order, depth);
                     exit (1);
                 }
 
@@ -344,8 +435,8 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
                 if (cxt->run_count > cxt->max_run_count) {
                     cxt->max_run_count = cxt->run_count;
                     if (cxt->run_count >= 20)
-                        fprintf (stderr, "ch %d: value %2g, terminating run of %d, ending at %.6f secs, peak value = %g\n",
-                            cxt->chan, outsample, cxt->run_count, cxt->total_samples / 2822400.0, cxt->last_sample_peak);
+                        fprintf (stderr, "ch %d: value %2g, terminating run of %d, ending at %.6f secs, max sample = %.3f, order = %.3f, depth = %d\n",
+                            cxt->chan, outsample, cxt->run_count, cxt->total_samples / 2822400.0, sample_max, order, depth);
                 }
 
                 cxt->last_sample_peak = sample_max;
@@ -361,7 +452,7 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
             if (filtered_error < cxt->min_filtered_error) cxt->min_filtered_error = filtered_error;
             cxt->total_samples++;
 #else
-            cxt->last_sample = best_sample (sample_ptr, order, cxt->error_feedback, cxt->depth);
+            cxt->last_sample = best_sample (sample_ptr, order, cxt->error_feedback, depth);
             *dsd_ptr |= ((cxt->last_sample > 0.0) & 1) << 1;           // b.1 of dsd_buffer is calculated DSD sample
 #endif
         }
@@ -526,7 +617,11 @@ static double min_error (ModulatorChannel *cxt, const float *samples, const doub
 static double min_error (const float *samples, const double *filter, const double *error, int depth, double max_min)
 #endif
 {
+#if NS_TAPS == 4
+    double sample = samples [0] + (error [0] * filter [0]) + (error [1] * filter [1]) + (error [2] * filter [2]) + (error [3] * filter [3]);
+#else
     double sample = samples [0] + (error [0] * filter [0]) + (error [1] * filter [1]) + (error [2] * filter [2]);
+#endif
 
 #if (DEPTH_TERM == 0)
     if (depth == 0) {
@@ -539,7 +634,11 @@ static double min_error (const float *samples, const double *filter, const doubl
 
 #if (DEPTH_TERM == 1)
     if (depth == 1) {
+#if NS_TAPS == 4
+        double sample_0 = samples [1] + ((-1.0 - sample) * filter [0]) + (error [0] * filter [1]) + (error [1] * filter [2]) + (error [2] * filter [3]);
+#else
         double sample_0 = samples [1] + ((-1.0 - sample) * filter [0]) + (error [0] * filter [1]) + (error [1] * filter [2]);
+#endif
         double sample_1 = sample_0 + filter [0] * 2.0;
 
 #ifdef STATISTICS
@@ -551,12 +650,24 @@ static double min_error (const float *samples, const double *filter, const doubl
 
 #if (DEPTH_TERM == 2)
     if (depth == 2) {
+#if NS_TAPS == 4
+        double sample_0 = samples [1] + ((-1.0 - sample) * filter [0]) + (error [0] * filter [1]) + (error [1] * filter [2]) + (error [2] * filter [3]);
+#else
         double sample_0 = samples [1] + ((-1.0 - sample) * filter [0]) + (error [0] * filter [1]) + (error [1] * filter [2]);
+#endif
         double sample_1 = sample_0 + filter [0] * 2.0;
 
+#if NS_TAPS == 4
+        double sample_0_0 = samples [2] + ((-1.0 - sample_0) * filter [0]) + ((-1.0 - sample) * filter [1]) + (error [0] * filter [2]) + (error [1] * filter [3]);
+#else
         double sample_0_0 = samples [2] + ((-1.0 - sample_0) * filter [0]) + ((-1.0 - sample) * filter [1]) + (error [0] * filter [2]);
+#endif
         double sample_0_1 = sample_0_0 + filter [0] * 2.0;
+#if NS_TAPS == 4
+        double sample_1_0 = samples [2] + ((-1.0 - sample_1) * filter [0]) + ((+1.0 - sample) * filter [1]) + (error [0] * filter [2]) + (error [1] * filter [3]);
+#else
         double sample_1_0 = samples [2] + ((-1.0 - sample_1) * filter [0]) + ((+1.0 - sample) * filter [1]) + (error [0] * filter [2]);
+#endif
         double sample_1_1 = sample_1_0 + filter [0] * 2.0;
 
         double error_0_0 = SQUARE (-1.0 - sample) + SQUARE (-1.0 - sample_0) + MIN_RMS_ERROR (sample_0_0);
@@ -577,7 +688,11 @@ static double min_error (const float *samples, const double *filter, const doubl
         double error_sum = SQUARE (first_sample - sample);
 
         if (NO_PRUNING || error_sum < max_min) {
+#if NS_TAPS == 4
+            double loc_error [] = { first_sample - sample, error [0], error [1], error [2] };
+#else
             double loc_error [] = { first_sample - sample, error [0], error [1] };
+#endif
             double alt_error_sum = SQUARE (-first_sample - sample);
 
 #ifdef STATISTICS
@@ -607,9 +722,28 @@ static double best_sample (ModulatorChannel *cxt, const float *samples, double o
 static double best_sample (const float *samples, double order, double *error, int depth)
 #endif
 {
+#if NS_TAPS == 4
+    double filter [NS_TAPS] = { -order };
+    double sample, best_sample;
+
+    if (order > 3.0) {
+        filter [1] = (order - 2.0) * 3.0;
+        filter [2] = 8.0 - (order * 3.0);
+        filter [3] = order - 3.0;
+    }
+    else {
+        filter [1] = (2.0 * order) - 3.0;
+        filter [2] = 2.0 - order;
+    }
+
+    sample = samples [0] + (error [0] * filter [0]) + (error [1] * filter [1]) + (error [2] * filter [2]) + (error [3] * filter [3]);
+    best_sample = (sample < 0.0) ? -1.0 : 1.0;
+    error [3] = error [2];
+#else
     double filter [] = { -order, 2.0 * order - 3.0, 2.0 - order };
     double sample = samples [0] + (error [0] * filter [0]) + (error [1] * filter [1]) + (error [2] * filter [2]);
     double best_sample = (sample < 0.0) ? -1.0 : 1.0;
+#endif
 
     error [2] = error [1];
     error [1] = error [0];
@@ -618,7 +752,11 @@ static double best_sample (const float *samples, double order, double *error, in
         switch (depth) {
 
         case 1: {
+#if NS_TAPS == 4
+            double sample_0 = samples [1] + ((-1.0 - sample) * filter [0]) + (error [1] * filter [1]) + (error [2] * filter [2]) + (error [3] * filter [3]);
+#else
             double sample_0 = samples [1] + ((-1.0 - sample) * filter [0]) + (error [1] * filter [1]) + (error [2] * filter [2]);
+#endif
             double sample_1 = sample_0 + filter [0] * 2.0;
 
             best_sample = SQUARE (+1.0 - sample) + MIN_RMS_ERROR (sample_1) < SQUARE (-1.0 - sample) + MIN_RMS_ERROR (sample_0) ? 1.0 : -1.0;
@@ -626,10 +764,18 @@ static double best_sample (const float *samples, double order, double *error, in
         }
 
         case 2: {
+#if NS_TAPS == 4
+            double sample_0 = samples [1] + ((-1.0 - sample) * filter [0]) + (error [1] * filter [1]) + (error [2] * filter [2]) + (error [3] * filter [3]);
+#else
             double sample_0 = samples [1] + ((-1.0 - sample) * filter [0]) + (error [1] * filter [1]) + (error [2] * filter [2]);
+#endif
             double sample_1 = sample_0 + filter [0] * 2.0;
 
+#if NS_TAPS == 4
+            double sample_0_0 = samples [2] + ((-1.0 - sample_0) * filter [0]) + ((-1.0 - sample) * filter [1]) + (error [1] * filter [2]) + (error [2] * filter [3]);
+#else
             double sample_0_0 = samples [2] + ((-1.0 - sample_0) * filter [0]) + ((-1.0 - sample) * filter [1]) + (error [1] * filter [2]);
+#endif
             double sample_0_1 = sample_0_0 + filter [0] * 2.0;
             double sample_1_0 = sample_0_0 + (filter [1] - SQUARE (filter [0])) * 2.0;
             double sample_1_1 = sample_1_0 + filter [0] * 2.0;

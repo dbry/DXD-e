@@ -20,7 +20,7 @@
 
 #define NUM_FILTERS 8                   // upsample ratio
 #define US_TAPS     16                  // upsample filter number of taps
-#define NS_TAPS     3                   // taps in noise-shaping filter
+#define NS_TAPS     4                   // taps in noise-shaping filter
 #define NUM_SAMPLES 1024
 #define DSD_DELAY   13                  // DSD byte delay line for analysis
 #define MAX_DEPTH   24
@@ -56,12 +56,12 @@ typedef struct {
 
 #ifdef STATISTICS
     int64_t called_best_sample, checked_alt_sample, used_alt_sample, leaves;
+    int max_run_count, run_count, align_lock_count, max_depth_seen;
     float sample_min, sample_max, upsample_min, upsample_max;
     double rms_filtered_error, rms_unfiltered_error;
     double max_filtered_error, max_unfiltered_error;
     double min_filtered_error, min_unfiltered_error;
     double last_sample_peak;
-    int max_run_count, run_count, align_lock_count;
     int64_t total_samples;
 #endif
 } ModulatorChannel;
