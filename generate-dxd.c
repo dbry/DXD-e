@@ -10,9 +10,12 @@
 
 #define PILOT_SEQUENCE 0xf123456789abcde0
 
-static void dsd_embed_run (void *embed_context, int32_t *dst_buffer, unsigned char *src_buffer, int nsamples, int pilot);
+#define EMBED_PILOT_SIGNAL  0x1
+#define EMBED_PILOT_UNIQUE  0x2
+
+static void dsd_embed_run (void *embed_context, int32_t *dst_buffer, unsigned char *src_buffer, int nsamples);
 static void dsd_embed_destroy (void *embed_context);
-static void *dsd_embed_init (int nchans);
+static void *dsd_embed_init (int nchans, int flags);
 
 #define BUFSAMPLES  65536
 
@@ -20,17 +23,18 @@ int main (int argc, char **argv)
 {
     int64_t total_dsd_samples = 0, total_pcm_samples = 0;
     int source_head = 0, decimate_tail = 0, embed_tail = 0;
-    int nchans = 2, embed_dsd = 0, pilot = 0, filter = 0;
+    int nchans = 2, embed_dsd = 0, flags = 0, filter = 0;
     void *dsd_decimator, *dsd_embedder = NULL;
     unsigned char *src_buffer;
     int32_t *dst_buffer;
 
     if (argc == 1) {
         fprintf (stderr, "Convert raw DSD to raw 24-bit DXD via 8x decimation, embed source DSD\n");
-        fprintf (stderr, "Usage: generate-dxd <nchans> [E|e] [P|p] [F|f] < 1bit-dsd.raw > 24bit-dxd.raw\n");
+        fprintf (stderr, "Usage: generate-dxd <nchans> [E|e] [P|p] [S|s] [F|f] < 1bit-dsd.raw > 24bit-dxd.raw\n");
         fprintf (stderr, "       <nchans> = 1 to 16 (required)\n");
         fprintf (stderr, "       [E|e] to embed source DSD\n");
-        fprintf (stderr, "       [P|p] to add pilot signal\n");
+        fprintf (stderr, "       [P|p] to add pilot signal (unique every run for production)\n");
+        fprintf (stderr, "       [S|s] to add pilot signal (same every run for testing)\n");
         fprintf (stderr, "       [F|f] for lowpass filter\n");
         return 0;
     }
@@ -49,7 +53,11 @@ int main (int argc, char **argv)
             if (strlen (argv [argi]) == 1 && (*argv [argi] == 'e' || *argv [argi] == 'E'))
                 embed_dsd = 1;
             else if (strlen (argv [argi]) == 1 && (*argv [argi] == 'p' || *argv [argi] == 'P'))
-                pilot = 1;
+                flags |= EMBED_PILOT_SIGNAL | EMBED_PILOT_UNIQUE;
+            else if (strlen (argv [argi]) == 1 && (*argv [argi] == 's' || *argv [argi] == 'S')) {
+                flags |= EMBED_PILOT_SIGNAL;
+                flags &= ~EMBED_PILOT_UNIQUE;
+            }
             else if (strlen (argv [argi]) == 1 && (*argv [argi] == 'f' || *argv [argi] == 'F'))
                 filter = 1;
             else {
@@ -58,12 +66,17 @@ int main (int argc, char **argv)
             }
         }
 
+    if ((flags & EMBED_PILOT_SIGNAL) && !embed_dsd) {
+        fprintf (stderr, "doesn't make sense to add pilot signal without also embedding DSD!!\n");
+        return 1;
+    }
+
     src_buffer = calloc (sizeof (unsigned char), BUFSAMPLES * nchans);
     dst_buffer = calloc (sizeof (int32_t), BUFSAMPLES * nchans);
     dsd_decimator = decimate_dsd_init (nchans, filter ? DECIMATE_LOWPASS : 0);
 
     if (embed_dsd)
-        dsd_embedder = dsd_embed_init (nchans);
+        dsd_embedder = dsd_embed_init (nchans, flags);
 
     while (1) {
         int samples_read = fread (src_buffer + source_head * nchans, nchans, BUFSAMPLES - source_head, stdin);
@@ -83,7 +96,7 @@ int main (int argc, char **argv)
             decimated_samples = decimate_dsd_run (dsd_decimator, NULL, -1, dst_buffer);
 
         if (dsd_embedder) {
-            dsd_embed_run (dsd_embedder, dst_buffer, src_buffer, decimated_samples, pilot);
+            dsd_embed_run (dsd_embedder, dst_buffer, src_buffer, decimated_samples);
             embed_tail += decimated_samples;
         }
         else
@@ -110,7 +123,7 @@ int main (int argc, char **argv)
 
     if (dsd_embedder)
         fprintf (stderr, "%ld total DSD samples, %ld total PCM samples with embedded %s\n",
-            total_dsd_samples, total_pcm_samples, pilot ? "DSD and pilot signal" : "raw DSD only");
+            total_dsd_samples, total_pcm_samples, (flags & EMBED_PILOT_SIGNAL) ? "DSD and pilot signal" : "raw DSD only");
     else
         fprintf (stderr, "%ld total DSD samples, %ld total PCM samples (without embedded DSD)\n", total_dsd_samples, total_pcm_samples);
 
@@ -131,15 +144,17 @@ typedef struct {
     Biquad *noise_shapers;
     float *noise_feedback;
     int64_t sample_index;
-    int nchans;
+    int nchans, flags;
 } EmbedContext;
 
 static void shaper_init (Biquad *f, double a0, double a1, double a2, double a3, double a4, double b1, double b2, double b3, double b4);
 
-static void *dsd_embed_init (int nchans)
+static void *dsd_embed_init (int nchans, int flags)
 {
     EmbedContext *context = (EmbedContext *) calloc (1, sizeof (EmbedContext));
+    uint32_t seed = 0x31415926;
 
+    context->flags = flags;
     context->nchans = nchans;
     context->parity_shifters = calloc (nchans, sizeof (uint32_t));
     context->noise_feedback = calloc (nchans, sizeof (float));
@@ -163,8 +178,17 @@ static void *dsd_embed_init (int nchans)
         shaper_init (context->noise_shapers + i,
             1.0, -3.265716689706981, +4.267791696608121, -2.6428195890912085, +0.6509425172718173,
             +0.013993225356330928, +1.64215031498716, +0.03615562742615169, +0.744295543451128); // version 4
-        if (getrandom (context->parity_shifters + i, 4, 0) != 4)
-            fprintf (stderr, "getrandom() not working!\n");
+
+        if (flags & EMBED_PILOT_SIGNAL) {
+            if (flags & EMBED_PILOT_UNIQUE) {
+                if (getrandom (context->parity_shifters + i, 4, 0) != 4)
+                    fprintf (stderr, "getrandom() not working!\n");
+            }
+            else {
+                context->parity_shifters [i] = seed;
+                seed = (seed << 1) | ((seed >> 31) & 1);
+            }
+        }
     }
 
     return context;
@@ -174,7 +198,7 @@ static void *dsd_embed_init (int nchans)
 // dst_buffer[] is 24-bit raw DXD data (decimated DSD)
 // DSD data is embedded into DXD data with parity bit and noise-shaping into dst_buffer[]
 
-static void dsd_embed_run (void *embed_context, int32_t *dst_buffer, unsigned char *src_buffer, int nsamples, int pilot)
+static void dsd_embed_run (void *embed_context, int32_t *dst_buffer, unsigned char *src_buffer, int nsamples)
 {
     EmbedContext *context = (EmbedContext *) embed_context;
     int chan = 0;
@@ -183,7 +207,7 @@ static void dsd_embed_run (void *embed_context, int32_t *dst_buffer, unsigned ch
         float codevalue = dst_buffer [i] - context->noise_feedback [chan];
         int32_t outvalue = ((int32_t) codevalue & 0xffffff00) | src_buffer [i];
 
-        if (pilot) {
+        if (context->flags & EMBED_PILOT_SIGNAL) {
             int pilot_parity_bit = (PILOT_SEQUENCE >> (63 - (context->sample_index & 0x3f))) & 1;
             pilot_parity_bit ^= __builtin_parity (context->parity_shifters [chan] & 0x40001000);
             context->parity_shifters [chan] = (context->parity_shifters [chan] << 1) | pilot_parity_bit;
