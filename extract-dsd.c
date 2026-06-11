@@ -28,15 +28,16 @@ int main (int argc, char **argv)
 {
     int total_dsd_samples = 0, total_pcm_samples = 0, valid_dsd_samples = 0;
     PilotDetect *pilot_detector;
+    int nchans = 2, force = 0;
     unsigned char *dst_buffer;
     int32_t *src_buffer;
-    int nchans = 2;
 
     if (argc == 1) {
         fprintf (stderr, "Convert raw 24-bit DXD-e to raw DSD via DSD verification/extraction\n");
-        fprintf (stderr, "Usage: extract-dsd <nchans> < 24bit-dxd.raw > 1bit-dsd.raw\n");
+        fprintf (stderr, "Usage: extract-dsd <nchans> [F|f] < 24bit-dxd.raw > 1bit-dsd.raw\n");
         fprintf (stderr, "       <nchans> = 1 to 16 (required)\n");
-        fprintf (stderr, " Note: areas with missing or corrupted DSD get silence (0x69), no modulation\n");
+        fprintf (stderr, "       [F|f] to force extract even without pilot signal (for testing)\n");
+        fprintf (stderr, " Note: areas with missing or corrupted DSD get silence (0x69)\n");
         return 0;
     }
 
@@ -48,6 +49,16 @@ int main (int argc, char **argv)
             return 1;
         }
     }
+
+    if (argc > 2)
+        for (int argi = 2; argi < argc; ++argi) {
+            if (strlen (argv [argi]) == 1 && (*argv [argi] == 'f' || *argv [argi] == 'F'))
+                force = 1;
+            else {
+                fprintf (stderr, "unknown argument: %s\n", argv [argi]);
+                return 1;
+            }
+        }
 
     src_buffer = calloc (sizeof (int32_t), BUFSAMPLES * nchans);
     dst_buffer = calloc (sizeof (char), BUFSAMPLES * nchans);
@@ -62,7 +73,7 @@ int main (int argc, char **argv)
         total_pcm_samples += samples_read * nchans;
 
         for (int c = 0; c < nchans; ++c) {
-            int dsd_valid = PilotDetectChannelRun (pilot_detector, src_buffer, c, samples_read);
+            int dsd_valid = force ? 1 : PilotDetectChannelRun (pilot_detector, src_buffer, c, samples_read);
 
             for (int i = 0; i < samples_read; ++i)
                 dst_buffer [(i * nchans) + c] = dsd_valid ? src_buffer [(i * nchans) + c] & 0xff : 0x69;
@@ -75,7 +86,8 @@ int main (int argc, char **argv)
         total_dsd_samples += samples_read * nchans;
     }
 
-    fprintf (stderr, "%d total PCM samples, %d total DSD samples, %d were valid\n", total_pcm_samples, total_dsd_samples, valid_dsd_samples);
+    fprintf (stderr, "%d total PCM samples, %d total DSD samples, %d were%svalid\n",
+        total_pcm_samples, total_dsd_samples, valid_dsd_samples, force ? " forced " : " ");
 
     PilotDetectDestroy (pilot_detector);
     free (src_buffer);
