@@ -93,8 +93,12 @@ int main (int argc, char **argv)
     float input_buffer [BUFFER_SAMPLES * nchans];
     int buffer_count = 0, latency_samples = 0;
     unsigned char embedded_selected [nchans];
+    int depth_selected [nchans];
 
     memset (embedded_selected, embedded & 0x1, nchans);
+
+    for (int c = 0; c < nchans; ++c)
+        depth_selected [c] = depth;
 
     while (1) {
         int samples_read = read_24bit_samples (stdin, input_buffer, nchans, BUFFER_SAMPLES);
@@ -116,10 +120,17 @@ int main (int argc, char **argv)
                 final_buf [i] = final_ptr [i * nchans];
             }
 
+#if 1       // toggle between embedded and calculated DSD every buffer
             if (toggle && buffer_count && output_generated == BUFFER_SAMPLES && buffer_count % nchans == c) {
                 dsd_transition (total_output_samples, initial_buf, final_buf, output_generated);
                 embedded_selected [c] ^= 1;
             }
+#else       // toggle specified depth with 2 every 16 buffers
+            if (toggle && buffer_count && !(buffer_count & 0xf) && ((buffer_count >> 4) % nchans) == c) {
+                modulateSetDepth (modulator, c, depth_selected [c] ^= depth ^ 2);
+                fprintf (stderr, "set channel %d depth to %d\n", c, depth_selected [c]);
+            }
+#endif
 
             for (int i = 0; i < output_generated; ++i)
                 output_ptr [i * nchans] = initial_buf [i];
