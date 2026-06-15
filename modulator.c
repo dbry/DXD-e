@@ -71,6 +71,10 @@ static double best_sample (const float *samples, double order, double *error, in
 // depth for reasonably high quality is 4-5, with 8 and higher being optimal (especially in cases where
 // the level exceeds 0 dB SACD).
 
+typedef struct {
+    float initial_order, transition_level, final_order, slope;
+} DepthShapingConfig;
+
 static DepthShapingConfig DepthShapingConfigs [] = {
     { 2.16, 0.40, 2.00  },   // depth = 0
     { 2.36, 0.40, 2.00  },   // depth = 1
@@ -162,14 +166,8 @@ void modulateSetDepth (Modulate *cxt, int channel_number, int depth)
     if (depth > MAX_DEPTH)
         depth = MAX_DEPTH;
 
-    if (channel_number < cxt->numChannels) {
-        if (depth < NUM_CONFIG_DEPTHS)
-            cptr->shaping_config = DepthShapingConfigs + depth;
-        else
-            cptr->shaping_config = DepthShapingConfigs + NUM_CONFIG_DEPTHS - 1;
-
+    if (channel_number < cxt->numChannels)
         cptr->depth = depth;
-    }
 }
 
 void modulateSetAlignment (Modulate *cxt, int channel_number, int enable)
@@ -326,10 +324,13 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
 
         // do the actual SDM here, assuming we have sufficient samples for lookahead depth
         while (cxt->upsample_buffer_fill - cxt->upsample_buffer_conv > MAX_DEPTH) {
-            float *sample_ptr = cxt->upsample_buffer + cxt->upsample_buffer_conv, sample_max = 0.0;
+            float *sample_ptr = cxt->upsample_buffer + cxt->upsample_buffer_conv, sample_max = 0.0, order;
             unsigned char *dsd_ptr = cxt->dsd_buffer + cxt->upsample_buffer_conv++;
-            float order = cxt->shaping_config->initial_order;
+            DepthShapingConfig *shaping_config;
             int depth = cxt->depth;
+
+            shaping_config = DepthShapingConfigs + ((depth < NUM_CONFIG_DEPTHS) ? depth : NUM_CONFIG_DEPTHS - 1);
+            order = shaping_config->initial_order;
 
 #ifdef THIRD_ORDER
             for (int i = 0; i <= 8; ++i)
@@ -395,11 +396,20 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
             for (int i = 0; i <= depth; ++i)
                 sample_max = fmax (sample_max, fabs (sample_ptr [i]));
 
-            if (sample_max > cxt->shaping_config->transition_level)
-                order += (sample_max - cxt->shaping_config->transition_level) * cxt->shaping_config->slope;
+            if (sample_max > shaping_config->transition_level)
+                order += (sample_max - shaping_config->transition_level) * shaping_config->slope;
 #endif
 
             order = floor (order) + sqrt (order - floor (order));   // adjust order to be more linear between 2.0 and 4.0
+
+            // test synch by periodically resetting DSD encoding
+            // double seconds = cxt->total_samples / 2822400.0;
+            // if ((seconds / 2.0) - floor (seconds / 2.0) == (double) cxt->chan / cxt->stride) {
+            //     cxt->error_feedback [0] = cxt->error_feedback [1] = cxt->error_feedback [2] = 0.0;
+#if NS_TAPS == 4
+            //     cxt->error_feedback [3] = 0.0;
+#endif
+            // }
 
 #ifdef STATISTICS
             float outsample = best_sample (cxt, sample_ptr, order, cxt->error_feedback, depth);
@@ -415,11 +425,6 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
 
             if (cxt->min_order == 0.0 || order < cxt->min_order) cxt->min_order = order;
             if (order > cxt->max_order) cxt->max_order = order;
-
-            // test synch by periodically resetting DSD encoding
-            // double seconds = cxt->total_samples / 2822400.0;
-            // if ((seconds / 2.0) - floor (seconds / 2.0) == (double) cxt->chan / cxt->stride)
-            //     cxt->error_feedback [0] = cxt->error_feedback [1] = cxt->error_feedback [2] = 0.0;
 
             if (outsample == cxt->last_sample) {
                 if (++(cxt->run_count) == 100) {
@@ -450,11 +455,12 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
             if (unfiltered_error < cxt->min_unfiltered_error) cxt->min_unfiltered_error = unfiltered_error;
             if (filtered_error > cxt->max_filtered_error) cxt->max_filtered_error = filtered_error;
             if (filtered_error < cxt->min_filtered_error) cxt->min_filtered_error = filtered_error;
-            cxt->total_samples++;
 #else
             cxt->last_sample = best_sample (sample_ptr, order, cxt->error_feedback, depth);
             *dsd_ptr |= ((cxt->last_sample > 0.0) & 1) << 1;           // b.1 of dsd_buffer is calculated DSD sample
 #endif
+
+            cxt->total_samples++;
         }
 
         // while we have whole bytes of DSD data ready, output it

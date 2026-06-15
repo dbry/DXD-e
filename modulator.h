@@ -31,10 +31,6 @@
 #define MODULATOR_ALIGN_EMBEDDED    0x10
 
 typedef struct {
-    float initial_order, transition_level, final_order, slope;
-} DepthShapingConfig;
-
-typedef struct {
     int flags;
     int upsample_buffer_fill, upsample_buffer_conv, upsample_buffer_tail;
     int source_buffer_head, source_buffer_tail;
@@ -42,7 +38,6 @@ typedef struct {
     float last_sample, min_order, max_order;
     double error_feedback [NS_TAPS];
     unsigned char *dsd_buffer;
-    DepthShapingConfig *shaping_config;
     float **upsample_filters;
     uint32_t tpdf_generator;
     void *decimator;
@@ -53,6 +48,7 @@ typedef struct {
 
     unsigned char dsd_embedded_buffer [DSD_DELAY], dsd_calculated_buffer [DSD_DELAY];
     int delayed_samples, plus_error_count, minus_error_count, large_error_count, phase_locked, unlock_count;
+    int64_t total_samples;
 
 #ifdef STATISTICS
     int64_t called_best_sample, checked_alt_sample, used_alt_sample, leaves;
@@ -62,7 +58,6 @@ typedef struct {
     double max_filtered_error, max_unfiltered_error;
     double min_filtered_error, min_unfiltered_error;
     double last_sample_peak;
-    int64_t total_samples;
 #endif
 } ModulatorChannel;
 
