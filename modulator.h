@@ -47,12 +47,12 @@ typedef struct {
     unsigned char *mod_output, *emb_output;
 
     unsigned char dsd_embedded_buffer [DSD_DELAY], dsd_calculated_buffer [DSD_DELAY];
-    int delayed_samples, plus_error_count, minus_error_count, large_error_count, phase_locked, unlock_count;
+    int delayed_samples, plus_error_count, minus_error_count, large_error_count, error_sum;
     int64_t total_samples;
 
 #ifdef STATISTICS
     int64_t called_best_sample, checked_alt_sample, used_alt_sample, leaves;
-    int max_run_count, run_count, align_lock_count, max_depth_seen;
+    int max_run_count, run_count, max_depth_seen;
     float sample_min, sample_max, upsample_min, upsample_max;
     double rms_filtered_error, rms_unfiltered_error;
     double max_filtered_error, max_unfiltered_error;

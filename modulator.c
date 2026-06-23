@@ -175,7 +175,7 @@ void modulateSetAlignment (Modulate *cxt, int channel_number, int enable)
     ModulatorChannel *cptr = cxt->channels + channel_number;
 
     if (channel_number < cxt->numChannels && cptr->decimator && enable == !(cptr->flags & MODULATOR_ALIGN_EMBEDDED)) {
-        cptr->phase_locked = cptr->unlock_count = 0;
+        cptr->plus_error_count = cptr->minus_error_count = cptr->large_error_count = cptr->error_sum = 0;
         cptr->flags ^= MODULATOR_ALIGN_EMBEDDED;
     }
 }
@@ -212,8 +212,6 @@ static unsigned char xor_images [] = {
 };
 
 #define NUM_XORS (sizeof (xor_images) / sizeof (xor_images [0]))
-#define SLOW_RATIO   16384.0
-#define FAST_RATIO   256.0
 
 static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
 {
@@ -520,6 +518,8 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
                             closest_average = merged_average;
                     }
 
+                    cxt->error_sum += closest_average - average_sum;
+
                     if (closest_average < average_sum)
                         cxt->minus_error_count++;
                     else if (closest_average > average_sum)
@@ -528,28 +528,20 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
                     if (abs (closest_average - average_sum) > 83656)
                         cxt->large_error_count++;
 
-                    if (cxt->plus_error_count + cxt->minus_error_count >= 64 && cxt->plus_error_count != cxt->minus_error_count &&
-                        (cxt->plus_error_count > cxt->minus_error_count) == (cxt->last_sample > 0.0)) {
-                            double ratio;
-
-                            if (cxt->large_error_count > 16 || !cxt->plus_error_count || !cxt->minus_error_count) {
-                                if (cxt->phase_locked && (cxt->unlock_count++ >= 16 || cxt->large_error_count > 16))
-                                    cxt->unlock_count = cxt->phase_locked = 0;
-                            }
-                            else if (!cxt->phase_locked && cxt->plus_error_count > 26 && cxt->minus_error_count > 26 && cxt->large_error_count < 4)
-#ifdef STATISTICS
-                                cxt->align_lock_count +=
-#endif
-                                cxt->phase_locked = 1;
-
-                            ratio = cxt->phase_locked ? SLOW_RATIO : FAST_RATIO;
-                            cxt->plus_error_count = cxt->minus_error_count = cxt->large_error_count = 0;
+                    if (cxt->plus_error_count + cxt->minus_error_count >= 64 && cxt->plus_error_count != cxt->minus_error_count) {
 #ifndef ALLOW_DRIFT
-                            cxt->error_feedback [0] = cxt->error_feedback [0] - cxt->error_feedback [0] / ratio + cxt->error_feedback [1] / ratio;
-                            cxt->error_feedback [1] = cxt->error_feedback [1] - cxt->error_feedback [1] / ratio + cxt->error_feedback [2] / ratio;
-                            cxt->error_feedback [2] = cxt->error_feedback [2] - cxt->error_feedback [2] / ratio;
+                        float average_error = (double) cxt->error_sum / (cxt->plus_error_count + cxt->minus_error_count);
+                        double correction_scale = (cxt->plus_error_count > cxt->minus_error_count) ? +1.0 : -1.0;
+
+                        if (!cxt->large_error_count && fabs (average_error) < 25600)
+                            correction_scale *= fabs (average_error) / 25600;
+
+                        cxt->error_feedback [0] -= correction_scale / 270.0;
+                        cxt->error_feedback [1] += correction_scale / 540.0;
+                        cxt->error_feedback [2] -= correction_scale / 270.0;
 #endif
-                        }
+                        cxt->plus_error_count = cxt->minus_error_count = cxt->large_error_count = cxt->error_sum = 0;
+                    }
 
 #ifdef WRITE_ERROR_CHAN
                     if (cxt->chan == WRITE_ERROR_CHAN) {
@@ -591,8 +583,6 @@ void modulateFree (Modulate *cxt)
         fprintf (stderr, "          upsampled (clipped) range = %.3f to %.3f\n", chan->upsample_min, chan->upsample_max);
         fprintf (stderr, "             unfiltered error range = %.3f to %.3f\n", chan->min_unfiltered_error, chan->max_unfiltered_error);
         fprintf (stderr, "               filtered error range = %.3f to %.3f\n", chan->min_filtered_error, chan->max_filtered_error);
-        if (chan->flags & MODULATOR_ALIGN_EMBEDDED)
-            fprintf (stderr, "                   alignment locked = %d times\n\n", chan->align_lock_count);
     }
 #endif
 
