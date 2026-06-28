@@ -49,8 +49,8 @@ int main (int argc, char **argv)
     int *corrupt_flag = calloc (nchans, sizeof (int));
     int done = 0;
 
-    if (random && getrandom (&seed, sizeof (seed), 0) != 0)
-        fprintf (stderr, "getrandom() not working!\n");
+    if (random && getrandom (&seed, sizeof (seed), 0) != sizeof (seed))
+        fprintf (stderr, "corrupt-dxd: getrandom() not working!\n");
 
     while (!done) {
         for (int c = 0; c < nchans; ++c) {

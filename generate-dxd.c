@@ -182,7 +182,7 @@ static void *dsd_embed_init (int nchans, int flags)
         if (flags & EMBED_PILOT_SIGNAL) {
             if (flags & EMBED_PILOT_UNIQUE) {
                 if (getrandom (context->parity_shifters + i, 4, 0) != 4)
-                    fprintf (stderr, "getrandom() not working!\n");
+                    fprintf (stderr, "generate-dxd: getrandom() not working!\n");
             }
             else {
                 context->parity_shifters [i] = seed;
