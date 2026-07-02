@@ -11,8 +11,7 @@
 #define BUFSAMPLES  4704
 #define NUM_BUFFERS 3
 
-#define IDLE_DEPTH  2
-#define GEN_DEPTH   8
+#define IDLE_LEVEL  1
 
 typedef enum { Init, Embedding, Generating, Syncing } DecoderState;
 
@@ -49,15 +48,15 @@ int main (int argc, char **argv)
     int total_dsd_samples = 0, total_pcm_samples = 0, valid_dsd_samples = 0, source_samples = 0;
     unsigned char *embedded_buffer, *modulated_buffer, *composite_buffer;
     PilotDetect *pilot_detector;
+    int nchans = 2, level = 3;
     int32_t *source_buffer;
     Modulate *modulator;
     float *float_buffer;
-    int nchans = 2;
 
     if (argc == 1) {
         fprintf (stderr, "Convert raw 24-bit DXD-e to raw DSD via DSD verification/extraction/modulation\n");
-        fprintf (stderr, "Usage: decode-dsd <nchans> < 24bit-dxd.raw > 1bit-dsd.raw\n");
-        fprintf (stderr, "       <nchans> = 1 to 16 (required)\n");
+        fprintf (stderr, "Usage: decode-dsd <nchans> [level] < 24bit-dxd.raw > 1bit-dsd.raw\n");
+        fprintf (stderr, "       <nchans> = 1 to 16 (required), <level> = 1 to 5 (default = 3)\n");
         fprintf (stderr, " Note: areas with missing or corrupted embedded DSD get newly modulated DSD\n");
         return 0;
     }
@@ -71,12 +70,21 @@ int main (int argc, char **argv)
         }
     }
 
+    if (argc > 2) {
+        level = atoi (argv [2]);
+
+        if (level < 1 || level > 5) {
+            fprintf (stderr, "level must be 1 to 5!\n");
+            return 1;
+        }
+    }
+
     source_buffer = calloc (sizeof (int32_t), NUM_BUFFERS * BUFSAMPLES * nchans);
     float_buffer = calloc (sizeof (float), BUFSAMPLES * nchans);
     embedded_buffer = calloc (sizeof (char), BUFSAMPLES * nchans);
     modulated_buffer = calloc (sizeof (char), BUFSAMPLES * nchans);
     composite_buffer = calloc (sizeof (char), BUFSAMPLES * nchans);
-    modulator = modulateInit (nchans, IDLE_DEPTH, MODULATE_MULTITHREADED | MODULATOR_ALIGN_EMBEDDED);
+    modulator = modulateInit (nchans, IDLE_LEVEL, MODULATE_MULTITHREADED | MODULATOR_ALIGN_EMBEDDED);
     pilot_detector = PilotDetectInit (nchans);
 
     DecoderChannel channels [nchans] = {};
@@ -119,7 +127,7 @@ int main (int argc, char **argv)
                         }
 
                         if (chan->state == Generating)
-                            modulateSetDepth (modulator, c, GEN_DEPTH);
+                            modulateSetLevel (modulator, c, level);
 
                         break;
 
@@ -156,7 +164,7 @@ int main (int argc, char **argv)
                             if (!chan->dsd_pilot_valid [1])
                                 chan->next_state = Generating;
                             else if (!chan->dsd_pilot_valid [2]) {
-                                modulateSetDepth (modulator, c, GEN_DEPTH);
+                                modulateSetLevel (modulator, c, level);
                                 modulateSetAlignment (modulator, c, 1);
                             }
                         }
@@ -193,7 +201,7 @@ int main (int argc, char **argv)
                     for (int i = 0; i < samples_generated; ++i)
                         composite_buffer [i * nchans + c] = initial_buf [i];
 
-                    modulateSetDepth (modulator, c, IDLE_DEPTH);
+                    modulateSetLevel (modulator, c, IDLE_LEVEL);
                     modulateSetAlignment (modulator, c, 0);
                 }
                 else if (chan->next_state == Generating && chan->state == Embedding) {    // transition from embedded to generated

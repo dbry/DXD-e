@@ -32,13 +32,13 @@ static int read_24bit_samples (FILE *file, float *buffer, int nchans, int sample
 
 int main (int argc, char **argv)
 {
-    int nchans = 2, depth = 4, embedded = 0, toggle = 0;
+    int nchans = 2, level = 3, embedded = 0, toggle = 0;
     int flags = MODULATE_MULTITHREADED;
 
     if (argc == 1) {
         fprintf (stderr, "Convert raw 24-bit PCM to raw DSD via 8x upsampling + delta-sigma modulation\n");
-        fprintf (stderr, "Usage: generate-dsd <nchans> [<depth> [e|c] [s|m] [d|a]] < 24bit-pcm.raw > 1bit-dsd.raw\n");
-        fprintf (stderr, "       <nchans> = 1 to 16 (required), <depth> = 2 to 24 (default = 4)\n");
+        fprintf (stderr, "Usage: generate-dsd <nchans> [<level> [e|c] [s|m] [d|a]] < 24bit-pcm.raw > 1bit-dsd.raw\n");
+        fprintf (stderr, "       <nchans> = 1 to 16 (required), <level> = 1 to 5 (default = 3)\n");
         fprintf (stderr, "       e = output embedded DSD, c = output calculated DSD (default), t = toggle\n");
         fprintf (stderr, "       d = drift (default allows streams to drift), a = align streams\n");
         fprintf (stderr, "       s = single-threaded, m = multi-threaded (default)\n");
@@ -55,10 +55,10 @@ int main (int argc, char **argv)
     }
 
     if (argc > 2) {
-        depth = atoi (argv [2]);
+        level = atoi (argv [2]);
 
-        if (depth < 0 || depth > 24) {
-            fprintf (stderr, "depth must be 0 to 24!\n");
+        if (level < 1 || level > 5) {
+            fprintf (stderr, "level must be 1 to 5!\n");
             return 1;
         }
 
@@ -86,19 +86,19 @@ int main (int argc, char **argv)
 
     decimator = decimate_dsd_init (0, 0);
 
-    Modulate *modulator = modulateInit (nchans, depth, flags);
+    Modulate *modulator = modulateInit (nchans, level, flags);
     int64_t total_input_samples = 0, total_output_samples = 0;
     unsigned char emb_output_buffer [BUFFER_SAMPLES * nchans];
     unsigned char mod_output_buffer [BUFFER_SAMPLES * nchans];
     float input_buffer [BUFFER_SAMPLES * nchans];
     int buffer_count = 0, latency_samples = 0;
     unsigned char embedded_selected [nchans];
-    int depth_selected [nchans];
+    // int depth_selected [nchans];
 
     memset (embedded_selected, embedded & 0x1, nchans);
 
-    for (int c = 0; c < nchans; ++c)
-        depth_selected [c] = depth;
+    // for (int c = 0; c < nchans; ++c)
+    //     depth_selected [c] = depth;
 
     while (1) {
         int samples_read = read_24bit_samples (stdin, input_buffer, nchans, BUFFER_SAMPLES);

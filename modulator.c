@@ -18,31 +18,12 @@
 #define NO_PRUNING  0
 #endif
 
-// #define ALLOW_DRIFT      // for testing
+// #define ALLOW_DRIFT      // allow drift even when tracking alignment (for testing)
+#define ENABLE_CLIPPING
 #define ENABLE_DITHER
 
 #define DEPTH_TERM  2       // tree search is terminated at this depth
 
-/////////////////////////////////////////////////////////////////////////////////////////
-// The normal operation is the search depth is set with the modulateInit() call (and
-// optionally updated with the modulateSetDepth() call) and is fixed. The appropriate
-// noise shaping filter (up to 3rd order) is continuously selected based on the detected
-// signal level.
-
-// Only ONE of these three alternatives to that scheme are allowed:
-
-// #define FIXED_ORDER 3.0  // For instability testing both filter and search depth are
-                            // fixed (signal level is not calculated nor considered).
-                            // Values over 3.0 require NS_TAPS to be set to 4.
-
-// #define THIRD_ORDER      // Pure 3rd-order shaping (up to +3.1 dB SACD level).
-                            // Search depth starts at 4 and goes up to 8 based on
-                            // detected level (suitable for realtime operation).
-
-// #define FOURTH_ORDER     // Pure 4th-order shaping (up to +3.1 dB SACD level).
-                            // Requires NS_TAPS set to 4. Search depth starts at 12 and
-                            // goes up to 18 based on detected level (which means slow
-                            // to VERY slow).
 /////////////////////////////////////////////////////////////////////////////////////////
 
 // Higher-order noise shaping filters (i.e., above 2nd-order) become unstable,
@@ -65,41 +46,7 @@ static double best_sample (ModulatorChannel *cxt, const float *samples, double o
 static double best_sample (const float *samples, double order, double *error, int depth);
 #endif
 
-// This table was determined empirically. When supplied a 1 kHz sine ramping linearly to full scale
-// (which gets soft-clipped to 0.86), the maximum run length should be no greater than 18 bits (except in
-// the case of depth = 0). Depths of 0 and 1 are NOT recommended (and not that much faster). The minimum
-// depth for reasonably high quality is 4-5, with 8 and higher being optimal (especially in cases where
-// the level exceeds 0 dB SACD).
-
-typedef struct {
-    float initial_order, transition_level, final_order, slope;
-} DepthShapingConfig;
-
-static DepthShapingConfig DepthShapingConfigs [] = {
-    { 2.16, 0.40, 2.00  },   // depth = 0
-    { 2.36, 0.40, 2.00  },   // depth = 1
-    { 2.56, 0.40, 2.09  },   // depth = 2
-    { 2.72, 0.40, 2.25  },   // depth = 3
-    { 3.00, 0.40, 2.36  },   // depth = 4
-    { 3.00, 0.50, 2.49  },   // depth = 5
-    { 3.00, 0.60, 2.56  },   // depth = 6
-    { 3.00, 0.66, 2.64  },   // depth = 7
-    { 3.00, 0.72, 2.68  },   // depth = 8
-    { 3.00, 0.74, 2.72  },   // depth = 9
-    { 3.00, 0.76, 2.765 },   // depth = 10
-    { 3.00, 0.78, 2.81  },   // depth = 11
-    { 3.00, 0.80, 2.855 },   // depth = 12
-    { 3.00, 0.81, 2.855 },   // depth = 13
-    { 3.00, 0.82, 2.90  },   // depth = 14
-    { 3.00, 0.83, 2.90  },   // depth = 15
-    { 3.00, 0.84, 2.95  },   // depth = 16
-    { 3.00, 0.85, 2.95  },   // depth = 17
-    { 3.00, 0.86, 3.00  },   // depth = 18+ (pure 3rd-order to hard-clip limit)
-};
-
-#define NUM_CONFIG_DEPTHS (sizeof (DepthShapingConfigs) / sizeof (DepthShapingConfigs [0]))
-
-Modulate *modulateInit (int numChannels, int depth, int flags)
+Modulate *modulateInit (int numChannels, int level, int flags)
 {
     Modulate *cxt = calloc (1, sizeof (Modulate));
     uint32_t seed = 0x31415926;
@@ -110,17 +57,6 @@ Modulate *modulateInit (int numChannels, int depth, int flags)
         decimator = decimate_dsd_init (0, 0);
 
     cxt->numChannels = numChannels;
-
-    for (int d = 0; d < NUM_CONFIG_DEPTHS; ++d) {
-        DepthShapingConfig *shaping_config = DepthShapingConfigs + d;
-
-        if (shaping_config->transition_level != HARD_CLIP)
-            shaping_config->slope = (shaping_config->final_order - shaping_config->initial_order) /
-                (HARD_CLIP - shaping_config->transition_level);
-        else
-            shaping_config->slope = 0.0;
-    }
-
     upsample_filters = calloc (NUM_FILTERS, sizeof (float*));
 
     for (int f = 0; f < NUM_FILTERS; ++f) {
@@ -133,7 +69,7 @@ Modulate *modulateInit (int numChannels, int depth, int flags)
     for (int c = 0; c < numChannels; ++c) {
         cxt->channels [c].chan = c;
 
-        modulateSetDepth (cxt, c, depth);
+        modulateSetLevel (cxt, c, level);
         cxt->channels [c].flags = flags;
 
         cxt->channels [c].upsample_filters = upsample_filters;
@@ -159,15 +95,29 @@ Modulate *modulateInit (int numChannels, int depth, int flags)
     return cxt;
 }
 
-void modulateSetDepth (Modulate *cxt, int channel_number, int depth)
+void modulateSetLevel (Modulate *cxt, int channel_number, int level)
 {
     ModulatorChannel *cptr = cxt->channels + channel_number;
 
-    if (depth > MAX_DEPTH)
-        depth = MAX_DEPTH;
+    if (channel_number < cxt->numChannels) {
+        if (level > 5)
+            level = 5;
+        else if (level < 1)
+            level = 1;
 
-    if (channel_number < cxt->numChannels)
-        cptr->depth = depth;
+#ifdef ENABLE_DITHER
+        cptr->dither_level = (32 >> level) / 262144.0;
+#endif
+
+        if (cptr->level != level) {
+            cptr->level = level;
+            cptr->plus_error_count = cptr->minus_error_count = cptr->large_error_count = cptr->error_sum = 0;
+            cptr->error_feedback [0] = cptr->error_feedback [1] = cptr->error_feedback [2] = 0.0;
+#if NS_TAPS == 4
+            cptr->error_feedback [3] = 0.0;
+#endif
+        }
+    }
 }
 
 void modulateSetAlignment (Modulate *cxt, int channel_number, int enable)
@@ -212,6 +162,14 @@ static unsigned char xor_images [] = {
 };
 
 #define NUM_XORS (sizeof (xor_images) / sizeof (xor_images [0]))
+
+#ifdef ENABLE_CLIPPING
+#define CLIP_VALUE(value) ((value) > 0.72 ? 1.0 - (0.0784 / ((value) - 0.44)) : (value))
+#else
+#define CLIP_VALUE(value) (value)
+#endif
+
+#define ORDER_TO_USABLE(order) (floor (order) + sqrt ((order) - floor (order)))
 
 static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
 {
@@ -273,13 +231,14 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
             }
 
             if (cxt->upsample_buffer_fill + NUM_FILTERS >= NUM_SAMPLES) {       // if upsample buffer is full...
-                int samples_to_move = cxt->upsample_buffer_fill - cxt->upsample_buffer_tail;
+                int move_area_start = cxt->upsample_buffer_conv - MAX_DEPTH;
+                int samples_to_move = cxt->upsample_buffer_fill - move_area_start;
 
-                memmove (cxt->upsample_buffer, cxt->upsample_buffer + cxt->upsample_buffer_tail, samples_to_move * sizeof (float));
-                memmove (cxt->dsd_buffer, cxt->dsd_buffer + cxt->upsample_buffer_tail, samples_to_move * sizeof (unsigned char));
-                cxt->upsample_buffer_fill -= cxt->upsample_buffer_tail;
-                cxt->upsample_buffer_conv -= cxt->upsample_buffer_tail;
-                cxt->upsample_buffer_tail -= cxt->upsample_buffer_tail;
+                memmove (cxt->upsample_buffer, cxt->upsample_buffer + move_area_start, samples_to_move * sizeof (float));
+                memmove (cxt->dsd_buffer, cxt->dsd_buffer + move_area_start, samples_to_move * sizeof (unsigned char));
+                cxt->upsample_buffer_fill -= move_area_start;
+                cxt->upsample_buffer_conv -= move_area_start;
+                cxt->upsample_buffer_tail -= move_area_start;
             }
 
             // generate 8 upsamples, and soft-clip if over +3.1 dB SACD
@@ -292,9 +251,10 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
             for (int f = 0; f < NUM_FILTERS; ++f) {
                 double result = apply_filter (source_ptr, cxt->upsample_filters [f], US_TAPS);
 
-#ifdef ENABLE_DITHER
-                result += tpdf_dither (&cxt->tpdf_generator) / 65536.0;
-#endif
+                if (cxt->dither_level != 0.0)
+                    result += tpdf_dither (&cxt->tpdf_generator) * cxt->dither_level;
+
+#ifdef ENABLE_CLIPPING
                 if (fabs (result) > SOFT_CLIP) {
                     if (result >= 1.00)
                         *upsample_ptr++ = HARD_CLIP;
@@ -306,6 +266,7 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
                         *upsample_ptr++ = -1.0 - (0.0784 / (result + 0.44));
                 }
                 else
+#endif
                     *upsample_ptr++ = result;
 
                 *dsd_ptr++ = (dsd_data >> (11 - f)) & 0x1;      // b.0 of dsd_buffer is embedded DSD
@@ -322,83 +283,127 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
 
         // do the actual SDM here, assuming we have sufficient samples for lookahead depth
         while (cxt->upsample_buffer_fill - cxt->upsample_buffer_conv > MAX_DEPTH) {
-            float *sample_ptr = cxt->upsample_buffer + cxt->upsample_buffer_conv, sample_max = 0.0, order;
+            float *sample_ptr = cxt->upsample_buffer + cxt->upsample_buffer_conv, sample_max = 0.0, order = 2.0;
             unsigned char *dsd_ptr = cxt->dsd_buffer + cxt->upsample_buffer_conv++;
-            DepthShapingConfig *shaping_config;
-            int depth = cxt->depth;
+            static int max_depth_per_level [] = { 0, 2, 6, 9, 15, 19 };
+            int max_depth = max_depth_per_level [cxt->level];
+            int depth = 2;
 
-            shaping_config = DepthShapingConfigs + ((depth < NUM_CONFIG_DEPTHS) ? depth : NUM_CONFIG_DEPTHS - 1);
-            order = shaping_config->initial_order;
+            if (cxt->level > 1)
+                for (int i = cxt->upsample_buffer_conv < max_depth ? -cxt->upsample_buffer_conv : -max_depth; i <= max_depth; ++i)
+                    sample_max = fmax (sample_max, fabs (sample_ptr [i]));
 
-#ifdef THIRD_ORDER
-            for (int i = 0; i <= 8; ++i)
-                sample_max = fmax (sample_max, fabs (sample_ptr [i]));
+            switch (cxt->level) {
+                case 2:
+                    order = 2.8;
+                    depth = 4;                                  // 4
 
-            order = 3.0;
-            depth = 4;
+                    if (sample_max > 0.50) {
+                        depth++;                                // 5
 
-            if (sample_max > 0.40) {
-                depth++;
+                        if (sample_max > 0.65) {
+                            depth++;                            // 6
 
-                if (sample_max > 0.50) {
-                    depth++;
-
-                    if (sample_max > 0.60) {
-                        depth++;
-
-                        if (sample_max > 0.70) {
-                            depth++;
-
-                            if (sample_max > 0.720)
-                                order -= (sample_max - 0.720) / 0.44;
+                            if (sample_max > 0.74)
+                                order -= (sample_max - 0.74) * 3.0;
                         }
                     }
-                }
-            }
-#elif defined FOURTH_ORDER
-            for (int i = 0; i <= 18; ++i)
-                sample_max = fmax (sample_max, fabs (sample_ptr [i]));
 
-            order = 4.0;
-            depth = 12;
+                    break;
 
-            if (sample_max > 0.40) {
-                depth++;
+                case 3:
+                    order = 3.0;
+                    depth = 5;                                  // 5
 
-                if (sample_max > 0.50) {
-                    depth++;
+                    if (sample_max > 0.40) {
+                        depth++;                                // 6
 
-                    if (sample_max > 0.60) {
-                        depth++;
+                        if (sample_max > 0.50) {
+                            depth++;                            // 7
 
-                        if (sample_max > 0.66) {
-                            depth++;
-
-                            if (sample_max > 0.68) {
-                                depth++;
+                            if (sample_max > 0.60) {
+                                depth++;                        // 8
 
                                 if (sample_max > 0.70) {
-                                    depth++;
+                                    depth++;                    // 9
 
-                                    if (sample_max > 0.720)
-                                        order -= (sample_max - 0.720) / 0.35;
+                                    if (sample_max > 0.75)
+                                        order -= (sample_max - 0.75) * 3.0;
                                 }
                             }
                         }
                     }
-                }
+
+                    break;
+
+                case 4:
+                    order = 3.8;
+                    depth = 10;                                 // 10
+
+                    if (sample_max > 0.33) {
+                        depth++;                                // 11
+
+                        if (sample_max > 0.50) {
+                            depth++;                            // 12
+
+                            if (sample_max > 0.56) {
+                                depth++;                        // 13
+
+                                if (sample_max > 0.64) {
+                                    depth++;                    // 14
+
+                                    if (sample_max > 0.69) {
+                                        depth++;                // 15
+
+                                        if (sample_max > 0.72)
+                                            order -= (sample_max - 0.72) * 5.0;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    break;
+
+                case 5:
+                    order = 4.0;
+                    depth = 12;                                         // 12
+
+                    if (sample_max > 0.38) {
+                        depth++;                                        // 13
+
+                        if (sample_max > 0.47) {
+                            depth++;                                    // 14
+
+                            if (sample_max > 0.50) {
+                                depth++;                                // 15
+
+                                if (sample_max > 0.61) {
+                                    depth++;                            // 16
+
+                                    if (sample_max > 0.66) {
+                                        depth++;                        // 17
+
+                                        if (sample_max > 0.68) {
+                                            depth++;                    // 18
+
+                                            if (sample_max > 0.70) {
+                                                depth++;                // 19
+
+                                                if (sample_max > 0.72)
+                                                    order -= (sample_max - 0.72) * 3.0;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    break;
+
+                default:
             }
-#elif defined FIXED_ORDER
-            order = FIXED_ORDER;
-#else
-            for (int i = 0; i <= depth; ++i)
-                sample_max = fmax (sample_max, fabs (sample_ptr [i]));
-
-            if (sample_max > shaping_config->transition_level)
-                order += (sample_max - shaping_config->transition_level) * shaping_config->slope;
-#endif
-
-            order = floor (order) + sqrt (order - floor (order));   // adjust order to be more linear between 2.0 and 4.0
 
             // test synch by periodically resetting DSD encoding
             // double seconds = cxt->total_samples / 2822400.0;
@@ -410,7 +415,7 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
             // }
 
 #ifdef STATISTICS
-            float outsample = best_sample (cxt, sample_ptr, order, cxt->error_feedback, depth);
+            float outsample = best_sample (cxt, sample_ptr, ORDER_TO_USABLE (order), cxt->error_feedback, depth);
             double filtered_error = outsample - *sample_ptr, unfiltered_error = cxt->error_feedback [0];
 
             if (depth > cxt->max_depth_seen) {
@@ -426,8 +431,8 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
 
             if (outsample == cxt->last_sample) {
                 if (++(cxt->run_count) == 100) {
-                    fprintf (stderr, "\n*** ch %d: value %2g, terminating run of %d, ending at %.6f secs, max sample = %.3f, order = %.3f, depth = %d ***\n\n",
-                        cxt->chan, outsample, cxt->run_count, cxt->total_samples / 2822400.0, sample_max, order, depth);
+                    fprintf (stderr, "\n*** ch %d: value %2g, terminating run of %d, ending at %.6f secs (%.3f), max sample = %.3f, order = %.3f, depth = %d ***\n\n",
+                        cxt->chan, outsample, cxt->run_count, cxt->total_samples / 2822400.0, CLIP_VALUE (cxt->total_samples / 169344000.0), sample_max, order, depth);
                     exit (1);
                 }
 
@@ -438,8 +443,8 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
                 if (cxt->run_count > cxt->max_run_count) {
                     cxt->max_run_count = cxt->run_count;
                     if (cxt->run_count >= 20)
-                        fprintf (stderr, "ch %d: value %2g, terminating run of %d, ending at %.6f secs, max sample = %.3f, order = %.3f, depth = %d\n",
-                            cxt->chan, outsample, cxt->run_count, cxt->total_samples / 2822400.0, sample_max, order, depth);
+                        fprintf (stderr, "ch %d: value %2g, terminating run of %d, ending at %.6f secs (%.3f), max sample = %.3f, order = %.3f, depth = %d\n",
+                            cxt->chan, outsample, cxt->run_count, cxt->total_samples / 2822400.0, CLIP_VALUE (cxt->total_samples / 169344000.0), sample_max, order, depth);
                 }
 
                 cxt->last_sample_peak = sample_max;
@@ -454,7 +459,7 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
             if (filtered_error > cxt->max_filtered_error) cxt->max_filtered_error = filtered_error;
             if (filtered_error < cxt->min_filtered_error) cxt->min_filtered_error = filtered_error;
 #else
-            cxt->last_sample = best_sample (sample_ptr, order, cxt->error_feedback, depth);
+            cxt->last_sample = best_sample (sample_ptr, ORDER_TO_USABLE (order), cxt->error_feedback, depth);
             *dsd_ptr |= ((cxt->last_sample > 0.0) & 1) << 1;           // b.1 of dsd_buffer is calculated DSD sample
 #endif
 

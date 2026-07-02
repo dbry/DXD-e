@@ -33,9 +33,9 @@
 typedef struct {
     int flags;
     int upsample_buffer_fill, upsample_buffer_conv, upsample_buffer_tail;
-    int source_buffer_head, source_buffer_tail;
+    int source_buffer_head, source_buffer_tail, level;
     float *source_buffer, *upsample_buffer;
-    float last_sample, min_order, max_order;
+    float last_sample, dither_level;
     double error_feedback [NS_TAPS];
     unsigned char *dsd_buffer;
     float **upsample_filters;
@@ -43,7 +43,7 @@ typedef struct {
     void *decimator;
 
     const float *input;
-    int numOutputFrames, numInputFrames, stride, depth, chan;
+    int numOutputFrames, numInputFrames, stride, chan;
     unsigned char *mod_output, *emb_output;
 
     unsigned char dsd_embedded_buffer [DSD_DELAY], dsd_calculated_buffer [DSD_DELAY];
@@ -52,8 +52,8 @@ typedef struct {
 
 #ifdef STATISTICS
     int64_t called_best_sample, checked_alt_sample, used_alt_sample, leaves;
+    float sample_min, sample_max, upsample_min, upsample_max, min_order, max_order;
     int max_run_count, run_count, max_depth_seen;
-    float sample_min, sample_max, upsample_min, upsample_max;
     double rms_filtered_error, rms_unfiltered_error;
     double max_filtered_error, max_unfiltered_error;
     double min_filtered_error, min_unfiltered_error;
@@ -67,8 +67,8 @@ typedef struct {
     ModulatorChannel *channels;
 } Modulate;
 
-Modulate *modulateInit (int numChannels, int depth, int flags);
-void modulateSetDepth (Modulate *cxt, int channel_number, int depth);
+Modulate *modulateInit (int numChannels, int level, int flags);
+void modulateSetLevel (Modulate *cxt, int channel_number, int level);
 void modulateSetAlignment (Modulate *cxt, int channel_number, int enable);
 int modulateProcess (Modulate *cxt, const float *input, int numInputFrames, unsigned char *mod_output, unsigned char *emb_output);
 void modulateFree (Modulate *cxt);
