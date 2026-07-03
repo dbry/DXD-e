@@ -18,6 +18,7 @@
 #define NO_PRUNING  0
 #endif
 
+// #define TEST_RESYNCING   // regularly reset modulator to test re-syncing
 // #define ALLOW_DRIFT      // allow drift even when tracking alignment (for testing)
 #define ENABLE_CLIPPING
 #define ENABLE_DITHER
@@ -405,14 +406,16 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
                 default:
             }
 
+#ifdef TEST_RESYNCING
             // test synch by periodically resetting DSD encoding
-            // double seconds = cxt->total_samples / 2822400.0;
-            // if ((seconds / 2.0) - floor (seconds / 2.0) == (double) cxt->chan / cxt->stride) {
-            //     cxt->error_feedback [0] = cxt->error_feedback [1] = cxt->error_feedback [2] = 0.0;
+            double seconds = cxt->total_samples / 2822400.0;
+            if ((seconds / 2.0) - floor (seconds / 2.0) == (double) cxt->chan / cxt->stride) {
+                cxt->error_feedback [0] = cxt->error_feedback [1] = cxt->error_feedback [2] = 0.0;
 #if NS_TAPS == 4
-            //     cxt->error_feedback [3] = 0.0;
+                cxt->error_feedback [3] = 0.0;
 #endif
-            // }
+            }
+#endif
 
 #ifdef STATISTICS
             float outsample = best_sample (cxt, sample_ptr, ORDER_TO_USABLE (order), cxt->error_feedback, depth);
@@ -533,17 +536,37 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
                     if (abs (closest_average - average_sum) > 83656)
                         cxt->large_error_count++;
 
+                    // The target is to do a worst-case 180° adjustment during a single 1/75 second sector. This is 4704 DXD
+                    // samples (assuming DSD64) and since we adjust every 64 DXD samples the adjustment amount is +/- 64 / 4704
+                    // every itteration through here. Note that adding a total of 1.0 to the error feedback results in a phase
+                    // shift of 180°. This amount is equally distributed among the available error terms and inversely scaled
+                    // by the sum of how the filter coefficients apply over time to that term.
+
                     if (cxt->plus_error_count + cxt->minus_error_count >= 64 && cxt->plus_error_count != cxt->minus_error_count) {
 #ifndef ALLOW_DRIFT
                         float average_error = (double) cxt->error_sum / (cxt->plus_error_count + cxt->minus_error_count);
-                        double correction_scale = (cxt->plus_error_count > cxt->minus_error_count) ? +1.0 : -1.0;
+                        double correction_scale = (cxt->plus_error_count > cxt->minus_error_count ? +64.0 : -64.0) / 4704.0;
+
+                        // when we're close the center, take smaller steps (PID)
 
                         if (!cxt->large_error_count && fabs (average_error) < 25600)
                             correction_scale *= fabs (average_error) / 25600;
 
-                        cxt->error_feedback [0] -= correction_scale / 270.0;
-                        cxt->error_feedback [1] += correction_scale / 540.0;
-                        cxt->error_feedback [2] -= correction_scale / 270.0;
+                        if (cxt->level == 1) {          // level 1 (2 terms)
+                            cxt->error_feedback [0] += correction_scale / 2.0 / -1.0;
+                            cxt->error_feedback [1] += correction_scale / 2.0 /  1.0;
+                        }
+                        else if (cxt->level <= 3) {     // levels 2 & 3 (3 terms)
+                            cxt->error_feedback [0] += correction_scale / 3.0 / -1.0;
+                            cxt->error_feedback [1] += correction_scale / 3.0 /  2.0;
+                            cxt->error_feedback [2] += correction_scale / 3.0 / -1.0;
+                        }
+                        else {                          // levels 4 & 5 (4 terms)
+                            cxt->error_feedback [0] += correction_scale / 4.0 / -1.0;
+                            cxt->error_feedback [1] += correction_scale / 4.0 /  3.0;
+                            cxt->error_feedback [2] += correction_scale / 4.0 / -3.0;
+                            cxt->error_feedback [3] += correction_scale / 4.0 /  1.0;
+                        }
 #endif
                         cxt->plus_error_count = cxt->minus_error_count = cxt->large_error_count = cxt->error_sum = 0;
                     }
