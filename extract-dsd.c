@@ -4,24 +4,10 @@
 #include <stdio.h>
 #include <math.h>
 
-#define PILOT_SEQUENCE 0xf123456789abcde0
+#include "dsd-utils.h"
+
 #define BUFSAMPLES  4704
 
-typedef struct {
-    uint64_t channel_shifter, sample_index;
-    uint32_t parity_shifter;
-    char locked;
-} PilotDetectChannel;
-
-typedef struct {
-    uint64_t parity_masks [64];
-    PilotDetectChannel *chans;
-    int nchans;
-} PilotDetect;
-
-static PilotDetect *PilotDetectInit (int nchans);
-static void PilotDetectDestroy (PilotDetect *context);
-static int PilotDetectChannelRun (PilotDetect *context, const int32_t *src_buffer, int chan, int nsamples);
 static int read_24bit_samples (FILE *file, int32_t *buffer, int nchans, int samples_to_read);
 
 int main (int argc, char **argv)
@@ -120,65 +106,4 @@ static int read_24bit_samples (FILE *file, int32_t *buffer, int nchans, int samp
     }
 
     return samples_read;
-}
-
-/*------------------------------------------------------------------------------------------------------------------------*/
-
-PilotDetect *PilotDetectInit (int nchans)
-{
-    PilotDetect *context = (PilotDetect *) calloc (1, sizeof (PilotDetect));
-    uint64_t shifter = PILOT_SEQUENCE;
-
-    context->nchans = nchans;
-
-    for (int i = 0; i < 64; ++i) {
-        context->parity_masks [i] = shifter;
-        shifter = (shifter << 1) | ((shifter >> 63) & 1);
-    }
-
-    context->chans = calloc (sizeof (PilotDetectChannel), nchans);
-
-    return context;
-}
-
-static int PilotDetectChannelRun (PilotDetect *context, const int32_t *src_buffer, int chan, int nsamples)
-{
-    PilotDetectChannel *chanptr = context->chans + chan;
-    int retval = chanptr->locked;
-
-    for (int index = 0; index < nsamples; ++index) {
-        chanptr->parity_shifter = (chanptr->parity_shifter << 1) | __builtin_parity (src_buffer [(index * context->nchans) + chan]);
-        chanptr->channel_shifter = (chanptr->channel_shifter << 1) | __builtin_parity (chanptr->parity_shifter & 0x80002001);
-
-        if (chanptr->locked) {
-            chanptr->locked = ((chanptr->locked + 1) & 0x3f) | 0x40;
-            if (chanptr->channel_shifter != context->parity_masks [chanptr->locked & 0x3f]) {
-                fprintf (stderr, "%d:  unlocked: %.4f (%d/%d)\n", chan, chanptr->sample_index / 352800.0, index, nsamples);
-                retval = chanptr->locked = 0;
-            }
-        }
-        else
-            for (int i = 0; i < 64; ++i)
-                if (chanptr->channel_shifter == context->parity_masks [i]) {
-                    if (chanptr->sample_index <= 94) {
-                        fprintf (stderr, "%d: prelocked: %.4f (%d/%d)\n", chan, chanptr->sample_index / 352800.0, index, nsamples);
-                        retval = 1;
-                    }
-                    else
-                        fprintf (stderr, "%d:    locked: %.4f (%d/%d)\n", chan, chanptr->sample_index / 352800.0, index, nsamples);
-
-                    chanptr->locked = i | 0x40;
-                    break;
-                }
-
-        chanptr->sample_index++;
-    }
-
-    return retval;
-}
-
-static void PilotDetectDestroy (PilotDetect *context)
-{
-    free (context->chans);
-    free (context);
 }
