@@ -209,7 +209,10 @@ static int decodeProcess (Decoder *cxt, const int32_t *source, int in_samples, u
 
                         if (chan->state == Generating)
                             modulateSetLevel (cxt->modulator, c, cxt->level);
+                        else
+                            modulateSetLevel (cxt->modulator, c, IDLE_LEVEL);
 
+                        modulateSetAlignment (cxt->modulator, c, 0);
                         break;
 
                     case Generating:
