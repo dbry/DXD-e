@@ -47,7 +47,7 @@ typedef struct {
     unsigned char *mod_output, *emb_output;
 
     unsigned char dsd_embedded_buffer [DSD_DELAY], dsd_calculated_buffer [DSD_DELAY];
-    int delayed_samples, plus_error_count, minus_error_count, large_error_count, error_sum;
+    int delayed_alignment, delayed_samples, plus_error_count, minus_error_count, large_error_count, error_sum;
     int64_t total_samples;
 
 #ifdef STATISTICS

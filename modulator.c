@@ -103,11 +103,14 @@ void modulateSetLevel (Modulate *cxt, int channel_number, int level)
     if (channel_number < cxt->numChannels) {
         if (level > 5)
             level = 5;
-        else if (level < 1)
-            level = 1;
+        else if (level < 0)
+            level = 0;
 
 #ifdef ENABLE_DITHER
-        cptr->dither_level = (32 >> level) / 262144.0;
+        if (level)
+            cptr->dither_level = (32 >> level) / 262144.0;
+        else
+            cptr->dither_level = 0.0;
 #endif
 
         if (cptr->level != level) {
@@ -128,6 +131,9 @@ void modulateSetAlignment (Modulate *cxt, int channel_number, int enable)
     if (channel_number < cxt->numChannels && cptr->decimator && enable == !(cptr->flags & MODULATOR_ALIGN_EMBEDDED)) {
         cptr->plus_error_count = cptr->minus_error_count = cptr->large_error_count = cptr->error_sum = 0;
         cptr->flags ^= MODULATOR_ALIGN_EMBEDDED;
+
+        if (enable)
+            cptr->delayed_alignment = DSD_DELAY;
     }
 }
 
@@ -282,8 +288,8 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
             cxt->source_buffer_tail++;
         }
 
-        // do the actual SDM here, assuming we have sufficient samples for lookahead depth
-        while (cxt->upsample_buffer_fill - cxt->upsample_buffer_conv > MAX_DEPTH) {
+        // do the actual SDM here, assuming we have sufficient samples for lookahead depth (and we're not idle)
+        while (cxt->upsample_buffer_fill - cxt->upsample_buffer_conv > MAX_DEPTH) if (cxt->level) {
             float *sample_ptr = cxt->upsample_buffer + cxt->upsample_buffer_conv, sample_max = 0.0, order = 2.0;
             unsigned char *dsd_ptr = cxt->dsd_buffer + cxt->upsample_buffer_conv++;
             static int max_depth_per_level [] = { 0, 2, 6, 9, 15, 19 };
@@ -468,6 +474,10 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
 
             cxt->total_samples++;
         }
+        else {
+            unsigned char *dsd_ptr = cxt->dsd_buffer + cxt->upsample_buffer_conv++;
+            *dsd_ptr |= (cxt->total_samples++ & 1) << 1;
+        }
 
         // while we have whole bytes of DSD data ready, output it
         while (cxt->upsample_buffer_tail + 8 <= cxt->upsample_buffer_conv) {
@@ -497,7 +507,7 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
                 cxt->numOutputFrames++;
 #endif
 
-                if (cxt->flags & MODULATOR_ALIGN_EMBEDDED) {
+                if ((cxt->flags & MODULATOR_ALIGN_EMBEDDED) && (!cxt->delayed_alignment || !cxt->delayed_alignment--)) {
                     int32_t calculated_sum = 0, embedded_sum = 0, average_sum, closest_average;
                     unsigned char dsd_merged_buffer [DSD_DELAY];
                     int transition_byte = (DSD_DELAY - 1) / 2;

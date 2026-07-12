@@ -120,7 +120,7 @@ int main (int argc, char **argv)
 
 #define BUFSAMPLES  4704
 
-#define IDLE_LEVEL  1
+#define IDLE_LEVEL  0
 
 static Decoder *decodeInit (int num_channels, int dsd_encode_level)
 {
