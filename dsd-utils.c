@@ -161,7 +161,9 @@ int PilotDetectChannelRun (PilotDetect *context, const int32_t *src_buffer, int 
         if (chanptr->locked) {
             chanptr->locked = ((chanptr->locked + 1) & 0x3f) | 0x40;
             if (chanptr->channel_shifter != context->parity_masks [chanptr->locked & 0x3f]) {
+#ifdef STATISTICS
                 fprintf (stderr, "%d:  unlocked: %.4f (%d/%d)\n", chan, chanptr->sample_index / 352800.0, index, nsamples);
+#endif
                 retval = chanptr->locked = 0;
             }
         }
@@ -169,12 +171,15 @@ int PilotDetectChannelRun (PilotDetect *context, const int32_t *src_buffer, int 
             for (int i = 0; i < 64; ++i)
                 if (chanptr->channel_shifter == context->parity_masks [i]) {
                     if (chanptr->sample_index <= 94) {
+#ifdef STATISTICS
                         fprintf (stderr, "%d: prelocked: %.4f (%d/%d)\n", chan, chanptr->sample_index / 352800.0, index, nsamples);
+#endif
                         retval = 1;
                     }
+#ifdef STATISTICS
                     else
                         fprintf (stderr, "%d:    locked: %.4f (%d/%d)\n", chan, chanptr->sample_index / 352800.0, index, nsamples);
-
+#endif
                     chanptr->locked = i | 0x40;
                     break;
                 }
