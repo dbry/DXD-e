@@ -76,7 +76,7 @@ int main (int argc, char **argv)
         }
     }
 
-    DecimationContext *decimator = decimate_dsd_init (0, 0);
+    DecimateDSD *decimator = decimateDSDinit (0, 0);
     Modulate *modulator = modulateInit (nchans, level, flags);
     int64_t total_input_samples = 0, total_output_samples = 0;
     unsigned char emb_output_buffer [BUFFER_SAMPLES * nchans];
@@ -128,7 +128,7 @@ int main (int argc, char **argv)
 
     fprintf (stderr, "total samples: %ld read, %ld written\n", total_input_samples, total_output_samples);
     dsd_transition_dumpstats (stderr);
-    decimate_dsd_destroy (decimator);
+    decimateDSDdestroy (decimator);
     modulateFree (modulator);
 
     return 0;

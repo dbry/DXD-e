@@ -15,7 +15,7 @@ int main (int argc, char **argv)
     int source_head = 0, decimate_tail = 0, embed_tail = 0;
     int nchans = 2, embed_dsd = 0, flags = 0, filter = 0;
     EmbedContext *dsd_embedder = NULL;
-    void *dsd_decimator;
+    DecimateDSD *dsd_decimator;
     unsigned char *src_buffer;
     int32_t *dst_buffer;
 
@@ -64,7 +64,7 @@ int main (int argc, char **argv)
 
     src_buffer = calloc (sizeof (unsigned char), BUFSAMPLES * nchans);
     dst_buffer = calloc (sizeof (int32_t), BUFSAMPLES * nchans);
-    dsd_decimator = decimate_dsd_init (nchans, filter ? DECIMATE_LOWPASS : 0);
+    dsd_decimator = decimateDSDinit (nchans, filter ? DECIMATE_LOWPASS : 0);
 
     if (embed_dsd)
         dsd_embedder = dsd_embed_init (nchans, flags);
@@ -80,11 +80,11 @@ int main (int argc, char **argv)
         source_head += samples_read;
 
         if (samples_read) {
-            decimated_samples = decimate_dsd_run (dsd_decimator, src_buffer + decimate_tail * nchans, source_head - decimate_tail, dst_buffer);
+            decimated_samples = decimateDSDrun (dsd_decimator, src_buffer + decimate_tail * nchans, source_head - decimate_tail, dst_buffer);
             decimate_tail = source_head;
         }
         else
-            decimated_samples = decimate_dsd_run (dsd_decimator, NULL, -1, dst_buffer);
+            decimated_samples = decimateDSDrun (dsd_decimator, NULL, -1, dst_buffer);
 
         if (dsd_embedder) {
             dsd_embed_run (dsd_embedder, dst_buffer, src_buffer, decimated_samples);
@@ -121,7 +121,7 @@ int main (int argc, char **argv)
     if (dsd_embedder)
         dsd_embed_destroy (dsd_embedder);
 
-    decimate_dsd_destroy (dsd_decimator);
+    decimateDSDdestroy (dsd_decimator);
     free (src_buffer);
     free (dst_buffer);
 

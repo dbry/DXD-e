@@ -9,7 +9,6 @@
 // modulator.c
 
 #include "modulator.h"
-#include "decimator.h"
 
 #ifdef NO_PRUNING
 #undef NO_PRUNING
@@ -55,7 +54,7 @@ Modulate *modulateInit (int numChannels, int level, int flags)
     void *decimator = NULL;
 
     if (flags & MODULATOR_ALIGN_EMBEDDED)
-        decimator = decimate_dsd_init (0, 0);
+        decimator = decimateDSDinit (0, 0);
 
     cxt->numChannels = numChannels;
     upsample_filters = calloc (NUM_FILTERS, sizeof (float*));
@@ -513,8 +512,8 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
                     int transition_byte = (DSD_DELAY - 1) / 2;
 
                     for (int i = 0; i < 7; ++i) {
-                        calculated_sum += decimate_single_sample (cxt->decimator, cxt->dsd_calculated_buffer + i);
-                        embedded_sum += decimate_single_sample (cxt->decimator, cxt->dsd_embedded_buffer + i);
+                        calculated_sum += decimateSingleDSDsample (cxt->decimator, cxt->dsd_calculated_buffer + i);
+                        embedded_sum += decimateSingleDSDsample (cxt->decimator, cxt->dsd_embedded_buffer + i);
                     }
 
                     average_sum = (calculated_sum + embedded_sum + 7) / 14;
@@ -528,7 +527,7 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
                         dsd_merged_buffer [transition_byte] ^= xor_images [xor_index];
 
                         for (int i = 0; i < 7; ++i)
-                            merged_sum += decimate_single_sample (cxt->decimator, dsd_merged_buffer + i);
+                            merged_sum += decimateSingleDSDsample (cxt->decimator, dsd_merged_buffer + i);
 
                         merged_average = (merged_sum + 3) / 7;
 
@@ -636,7 +635,7 @@ void modulateFree (Modulate *cxt)
     for (int f = 0; f < NUM_FILTERS; ++f)
         free (cxt->channels [0].upsample_filters [f]);
 
-    decimate_dsd_destroy (cxt->channels [0].decimator);
+    decimateDSDdestroy (cxt->channels [0].decimator);
     free (cxt->channels [0].upsample_filters);
     free (cxt->channels);
     free (cxt);

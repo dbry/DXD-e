@@ -21,7 +21,7 @@ typedef struct {
     DecoderChannel *channels;
     PilotDetect *pilot_detector;
     Modulate *modulator;
-    void *decimator;
+    DecimateDSD *decimator;
     int nchans, level;
 
     int64_t total_dsd_samples, total_pcm_samples;
@@ -129,7 +129,7 @@ static Decoder *decodeInit (int num_channels, int dsd_encode_level)
     decoder->nchans = num_channels;
     decoder->level = dsd_encode_level;
     decoder->channels = calloc (num_channels, sizeof (DecoderChannel));
-    decoder->decimator = decimate_dsd_init (0, 0);
+    decoder->decimator = decimateDSDinit (0, 0);
     decoder->modulator = modulateInit (num_channels, IDLE_LEVEL, MODULATE_MULTITHREADED | MODULATOR_ALIGN_EMBEDDED);
     decoder->pilot_detector = PilotDetectInit (num_channels);
     decoder->float_buffer = calloc (sizeof (float), BUFSAMPLES * num_channels);
@@ -363,7 +363,7 @@ static void decodeFree (Decoder *cxt)
     free (cxt->modulated_buffer);
     free (cxt->composite_buffer);
     modulateFree (cxt->modulator);
-    decimate_dsd_destroy (cxt->decimator);
+    decimateDSDdestroy (cxt->decimator);
     PilotDetectDestroy (cxt->pilot_detector);
     free (cxt->channels);
     free (cxt);

@@ -16,6 +16,7 @@
 #include <float.h>
 #include <math.h>
 
+#include "dsd-utils.h"
 #include "workers.h"
 
 #define NUM_FILTERS 8                   // upsample ratio
@@ -67,9 +68,16 @@ typedef struct {
     ModulatorChannel *channels;
 } Modulate;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 Modulate *modulateInit (int numChannels, int level, int flags);
 void modulateSetLevel (Modulate *cxt, int channel_number, int level);
 void modulateSetAlignment (Modulate *cxt, int channel_number, int enable);
 int modulateProcess (Modulate *cxt, const float *input, int numInputFrames, unsigned char *mod_output, unsigned char *emb_output);
 void modulateFree (Modulate *cxt);
 
+#ifdef __cplusplus
+}
+#endif
