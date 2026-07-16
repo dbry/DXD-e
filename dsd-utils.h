@@ -87,6 +87,7 @@ typedef struct {
 typedef struct {
     uint64_t channel_shifter, sample_index;
     uint32_t parity_shifter;
+    int samples_to_skip;
     char locked;
 } PilotDetectChannel;
 

@@ -102,6 +102,7 @@ int decimateDSDrun (DecimateDSD *cxt, const unsigned char *in_samples, int numIn
             for (int c = 0; c < cxt->num_channels; ++c)
                 *out_samples++ = cxt->chans [c].last_sample;
 
+        decimateDSDreset (cxt);
         return DELAY_SAMPLES;
     }
 
@@ -385,9 +386,13 @@ int PilotDetectChannelRun (PilotDetect *context, const int32_t *src_buffer, int 
                 retval = chanptr->locked = 0;
             }
         }
-        else
-            for (int i = 0; i < 64; ++i)
-                if (chanptr->channel_shifter == context->parity_masks [i]) {
+        else if (!chanptr->samples_to_skip) {
+            int max_trailing_zeros = 0;
+
+            for (int i = 0; i < 64; ++i) {
+                uint64_t diffs = chanptr->channel_shifter ^ context->parity_masks [i];
+
+                if (!diffs) {
                     if (chanptr->sample_index <= 94) {
 #ifdef STATISTICS
                         fprintf (stderr, "%d: prelocked: %.4f (%d/%d)\n", chan, chanptr->sample_index / 352800.0, index, nsamples);
@@ -401,6 +406,18 @@ int PilotDetectChannelRun (PilotDetect *context, const int32_t *src_buffer, int 
                     chanptr->locked = i | 0x40;
                     break;
                 }
+                else {
+                    int trailing_zeros = __builtin_ctzl (diffs);
+
+                    if (trailing_zeros > max_trailing_zeros)
+                        max_trailing_zeros = trailing_zeros;
+                }
+
+                chanptr->samples_to_skip = 63 - max_trailing_zeros;
+            }
+        }
+        else
+            chanptr->samples_to_skip--;
 
         chanptr->sample_index++;
     }
