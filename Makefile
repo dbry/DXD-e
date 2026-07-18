@@ -2,9 +2,12 @@
 
 CC := gcc
 
-utils := generate-dsd generate-dxd extract-dsd corrupt-dxd decode-dxd
+utils := dxd-e generate-dsd generate-dxd extract-dsd corrupt-dxd decode-dxd
 
 all: $(utils)
+
+dxd-e: dxd-e.c dsd-utils.c dsd-utils.h biquad.c biquad.h Makefile
+	$(CC) -Wall -Ofast dxd-e.c dsd-utils.c biquad.c -lm -lwavpack -o dxd-e
 
 generate-dsd: generate-dsd.c modulator.c modulator.h dsd-utils.c dsd-utils.h Makefile
 	$(CC) -Wall -Ofast generate-dsd.c modulator.c dsd-utils.c biquad.c workers.c -lm -o generate-dsd
@@ -22,4 +25,4 @@ corrupt-dxd: corrupt-dxd.c Makefile
 	$(CC) -Wall -O2 corrupt-dxd.c -lm -o corrupt-dxd
 
 clean:
-	rm -f generate-dsd generate-dxd extract-dsd corrupt-dxd decode-dxd
+	rm -f dxd-e generate-dsd generate-dxd extract-dsd corrupt-dxd decode-dxd
