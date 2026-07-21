@@ -301,8 +301,12 @@ static int analyze_file (FILE *output, char *filename)
     fprintf (output, "\n");
 
     fprintf (output, "%16s:", "99.9% magnitude");
-    for (int chan = 0; chan < num_channels; ++chan)
-        fprintf (output, "%12f", population_to_magnitude (0.999, chan_data + chan));
+    for (int chan = 0; chan < num_channels; ++chan) {
+        double magnitude = population_to_magnitude (0.999, chan_data + chan);
+        if (magnitude > chan_data [chan].max_value) magnitude = chan_data [chan].max_value;
+        else if (magnitude < chan_data [chan].min_value) magnitude = chan_data [chan].min_value;
+        fprintf (output, "%12f", magnitude);
+    }
     fprintf (output, "\n");
 
 #ifdef THRESHOLD
