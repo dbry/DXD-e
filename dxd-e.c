@@ -11,11 +11,32 @@
 
 // #define THRESHOLD 0.501171
 
-static int analyze_file (FILE *output, char *filename);
+typedef struct {
+    float min_value, max_value;
+    double value_sum, abs_value_sum, rms_sum, rms_level, peak_rms_level;
+    int64_t num_samples, magnitude_histogram [100], threshold;
+    int valid_dsd_sectors, no_dsd_sectors;
+} ChannelData;
+
+typedef struct {
+    char format [32];
+    ChannelData *chan_data;
+    int64_t total_samples;
+    int bytes_per_sample, bits_per_sample;
+    int num_channels, sample_rate, qmode, mode, dsd, dxd, errors;
+    uint32_t channel_mask;
+} WavpackFileInfo;
+
+static WavpackFileInfo *analyze_file (FILE *output, char *filename, char *error);
+static void display_file_info (FILE *output, WavpackFileInfo *file_info);
+static int convert_dsd_to_dxd (char *infilename, char *outfilename);
+static int convert_dxd_to_dsd (char *infilename, char *outfilename);
 
 int main (int argc, char **argv)
 {
-    char *infilename = NULL, *outfilename = NULL;
+    char *infilename = NULL, *outfilename = NULL, error [80];
+    int overwrite = 0, res = 0;
+    WavpackFileInfo *info;
 
     if (argc == 1) {
         fprintf (stderr, "Process WavPack files to/from DSD to DXD\n");
@@ -56,9 +77,9 @@ int main (int argc, char **argv)
             while (*++*argv)
                 switch (**argv) {
 
-                    // case 'Y': case 'y':
-                    //     overwrite = 1;
-                    //     break;
+                    case 'Y': case 'y':
+                        overwrite = 1;
+                        break;
 
                     default:
                         fprintf (stderr, "\nillegal option: %c !\n", **argv);
@@ -83,17 +104,49 @@ int main (int argc, char **argv)
         return 1;
     }
 
-    return analyze_file (stdout, infilename);
+    info = analyze_file (stdout, infilename, error);
+
+    if (!info) {
+        fprintf (stderr, "error in file %s: %s\n", infilename, error);
+        return 1;
+    }
+
+    display_file_info (stdout, info);
+
+    if (outfilename) {
+        if (!overwrite) {
+            FILE *test_read_open = fopen (outfilename, "rb");
+            if (test_read_open) {
+                fclose (test_read_open);
+                fprintf (stderr, "output file %s exists, use -y to overwrite!\n", outfilename);
+                res = 1;
+            }
+        }
+
+        if (info->dsd) {
+            fprintf (stderr, "converting %s file %s to DXD-e file %s (with embedded DSD)...\n",
+                info->format, infilename, outfilename);
+
+            res = convert_dsd_to_dxd (infilename, outfilename);
+        }
+        else if (info->dxd) {
+            fprintf (stderr, "converting %s file %s to DSD file %s...\n",
+                info->format, infilename, outfilename);
+
+            res = convert_dxd_to_dsd (infilename, outfilename);
+        }
+        else {
+            fprintf (stderr, "error: can't convert file %s, not DSD or DXD!\n", infilename);
+            res = 1;
+        }
+    }
+
+    free (info->chan_data);
+    free (info);
+    return res;
 }
 
 #define BUFFER_SAMPLES  1048576
-
-typedef struct {
-    float min_value, max_value;
-    double value_sum, abs_value_sum, rms_sum, rms_level, peak_rms_level;
-    int64_t num_samples, magnitude_histogram [100], threshold;
-    int valid_dsd_sectors, no_dsd_sectors;
-} ChannelData;
 
 static void analyze_float_data (float *src, int num_samples, int num_channels, int sample_rate, ChannelData *chan_data);
 static void float_integer_data (int32_t *src, float *dst, int num_samples, int bps);
@@ -101,66 +154,64 @@ static double population_to_magnitude (double population, ChannelData *chan_data
 static char *string_channel (int channel, int channel_mask, int center_width);
 static char *string_time (double seconds);
 
-static int analyze_file (FILE *output, char *filename)
+static WavpackFileInfo *analyze_file (FILE *output, char *filename, char *error)
 {
-    char error [80], format [80];
     int flags = OPEN_NORMALIZE | OPEN_DSD_NATIVE | (4 << OPEN_THREADS_SHFT);
     WavpackContext *cxt = WavpackOpenFileInput (filename, error, flags, 0);
-    int dsd = 0, dxd = 0;
+    WavpackFileInfo *file_info;
 
-    if (!cxt) {
-        fprintf (output, "can't open file %s: %s\n", filename, error);
-        return 1;
-    }
+    if (!cxt)
+        return NULL;
 
-    int64_t total_samples = WavpackGetNumSamples64 (cxt);
-    int bytes_per_sample = WavpackGetBytesPerSample (cxt);
-    int bits_per_sample = WavpackGetBitsPerSample (cxt);
-    uint32_t channel_mask = WavpackGetChannelMask (cxt);
-    int num_channels = WavpackGetNumChannels (cxt);
-    int sample_rate = WavpackGetSampleRate (cxt);
-    int qmode = WavpackGetQualifyMode (cxt);
-    int mode = WavpackGetMode (cxt);
+    file_info = calloc (1, sizeof (WavpackFileInfo));
+    file_info->total_samples = WavpackGetNumSamples64 (cxt);
+    file_info->bytes_per_sample = WavpackGetBytesPerSample (cxt);
+    file_info->bits_per_sample = WavpackGetBitsPerSample (cxt);
+    file_info->channel_mask = WavpackGetChannelMask (cxt);
+    file_info->num_channels = WavpackGetNumChannels (cxt);
+    file_info->sample_rate = WavpackGetSampleRate (cxt);
+    file_info->qmode = WavpackGetQualifyMode (cxt);
+    file_info->mode = WavpackGetMode (cxt);
 
-    if (qmode & QMODE_DSD_AUDIO) {
-        if (sample_rate % 44100 == 0) {
-            dsd = sample_rate * 8 / 44100;
-            sprintf (format, "DSD%d", dsd);
+    if (file_info->qmode & QMODE_DSD_AUDIO) {
+        if (file_info->sample_rate % 44100 == 0) {
+            file_info->dsd = file_info->sample_rate * 8 / 44100;
+            sprintf (file_info->format, "DSD%d", file_info->dsd);
         }
-        else if (sample_rate % 48000 == 0) {
-            dsd = sample_rate * 8 / 48000;
-            sprintf (format, "DSD%d (%f MHz)", dsd, sample_rate / 125000.0);
+        else if (file_info->sample_rate % 48000 == 0) {
+            file_info->dsd = file_info->sample_rate * 8 / 48000;
+            sprintf (file_info->format, "DSD%d (%f MHz)", file_info->dsd, file_info->sample_rate / 125000.0);
         }
         else {
-            dsd = -1;
-            sprintf (format, "DSD @ %f MHz", sample_rate / 125000.0);
+            file_info->dsd = -1;
+            sprintf (file_info->format, "DSD @ %f MHz", file_info->sample_rate / 125000.0);
         }
     }
-    else if (bits_per_sample >= 24 && (sample_rate % 352800 == 0 || sample_rate % 384000 == 0)) {
-        dxd = sample_rate / 1000;
-        sprintf (format, "DXD%d", dxd);
+    else if (file_info->bits_per_sample >= 24 && (file_info->sample_rate % 352800 == 0 || file_info->sample_rate % 384000 == 0)) {
+        file_info->dxd = file_info->sample_rate / 1000;
+        sprintf (file_info->format, "DXD%d", file_info->dxd);
     }
     else
-        sprintf (format, "PCM");
+        sprintf (file_info->format, "PCM");
 
-    int sector_samples = sample_rate / 75;
+    int sector_samples = file_info->sample_rate / 75;
     int buffer_samples = BUFFER_SAMPLES / sector_samples * sector_samples;
 
-    ChannelData *chan_data = calloc (num_channels, sizeof (ChannelData));
-    int32_t *source_buffer = malloc (buffer_samples * sizeof (int32_t) * num_channels);
-    float *float_buffer = malloc (buffer_samples * sizeof (float) * num_channels);
-    int64_t samples_remaining = total_samples, samples_processed = 0;
+    ChannelData *chan_data = file_info->chan_data = calloc (file_info->num_channels, sizeof (ChannelData));
+    int32_t *source_buffer = malloc (buffer_samples * sizeof (int32_t) * file_info->num_channels);
+    float *float_buffer = malloc (buffer_samples * sizeof (float) * file_info->num_channels);
+    int64_t samples_remaining = file_info->total_samples, samples_processed = 0;
     unsigned char *dsd_samples = NULL;
+    DecimateDSD *decimator = NULL;
     PilotDetect *detector = NULL;
-    DecimateDSD *decimator;
 
-    if (qmode & QMODE_DSD_AUDIO) {
-        dsd_samples = malloc (buffer_samples * sizeof (char) * num_channels);
-        decimator = decimateDSDinit (num_channels, 0);
+    if (file_info->qmode & QMODE_DSD_AUDIO) {
+        dsd_samples = malloc (buffer_samples * sizeof (char) * file_info->num_channels);
+        decimator = decimateDSDinit (file_info->num_channels, 0);
     }
 
-    if (dxd)
-        detector = PilotDetectInit (num_channels);
+    if (file_info->dxd)
+        detector = PilotDetectInit (file_info->num_channels);
 
     while (1) {
         int samples_to_read = buffer_samples, samples_read, samples_ready;
@@ -171,15 +222,18 @@ static int analyze_file (FILE *output, char *filename)
         samples_read = WavpackUnpackSamples (cxt, source_buffer, samples_to_read);
 
         if (samples_read != samples_to_read) {
-            fprintf (output, "file exhausted prematurely!\n");
-            return 1;
+            strcpy (error, "file exhausted prematurely");
+            WavpackCloseFile (cxt);
+            free (file_info->chan_data);
+            free (file_info);
+            return NULL;
         }
 
         samples_remaining -= samples_read;
         samples_ready = samples_read;
 
-        if (qmode & QMODE_DSD_AUDIO) {
-            int dsd_samples_ready = samples_ready * num_channels;
+        if (file_info->qmode & QMODE_DSD_AUDIO) {
+            int dsd_samples_ready = samples_ready * file_info->num_channels;
 
             for (int i = 0; i < dsd_samples_ready; ++i)
                 dsd_samples [i] = source_buffer [i] & 0xff;
@@ -189,29 +243,29 @@ static int analyze_file (FILE *output, char *filename)
             if (!samples_ready)
                 break;
 
-            float_integer_data (source_buffer, float_buffer, samples_ready * num_channels, 3);
+            float_integer_data (source_buffer, float_buffer, samples_ready * file_info->num_channels, 3);
         }
         else {
             if (!samples_ready)
                 break;
 
-            if (mode & MODE_FLOAT) {
-                memcpy (float_buffer, source_buffer, sizeof (float) * samples_ready * num_channels);
+            if (file_info->mode & MODE_FLOAT) {
+                memcpy (float_buffer, source_buffer, sizeof (float) * samples_ready * file_info->num_channels);
 
-                if (dxd)
-                    for (int i = 0; i < samples_ready * num_channels; ++i)
+                if (file_info->dxd)
+                    for (int i = 0; i < samples_ready * file_info->num_channels; ++i)
                         source_buffer [i] = float_buffer [i] * 8388608.0;
             }
             else
-                float_integer_data (source_buffer, float_buffer, samples_ready * num_channels, bytes_per_sample);
+                float_integer_data (source_buffer, float_buffer, samples_ready * file_info->num_channels, file_info->bytes_per_sample);
         }
 
         samples_processed += samples_ready;
 
-        analyze_float_data (float_buffer, samples_ready, num_channels, sample_rate, chan_data);
+        analyze_float_data (float_buffer, samples_ready, file_info->num_channels, file_info->sample_rate, chan_data);
 
-        if (dxd)
-            for (int chan = 0; chan < num_channels; ++chan) {
+        if (file_info->dxd)
+            for (int chan = 0; chan < file_info->num_channels; ++chan) {
                 int samples_to_scan = samples_ready;
                 int buffer_index = 0;
 
@@ -226,40 +280,66 @@ static int analyze_file (FILE *output, char *filename)
                     else
                         chan_data [chan].no_dsd_sectors++;
 
-                    buffer_index += samples * num_channels;
+                    buffer_index += samples * file_info->num_channels;
                     samples_to_scan -= samples;
                 }
             }
     }
 
-    fprintf (output, "\n\n");
-    fprintf (output, "%16s:%12d\n", "channels", num_channels);
-    fprintf (output, "%16s:%12s\n", "format", format);
-    if (mode & MODE_FLOAT)
+    file_info->errors = WavpackGetNumErrors (cxt);
+
+    WavpackCloseFile (cxt);
+    free (source_buffer);
+    free (float_buffer);
+
+    if (file_info->qmode & QMODE_DSD_AUDIO) {
+        decimateDSDdestroy (decimator);
+        free (dsd_samples);
+    }
+
+    if (file_info->dxd)
+        PilotDetectDestroy (detector);
+
+    return file_info;
+}
+
+static void display_file_info (FILE *output, WavpackFileInfo *file_info)
+{
+    ChannelData *chan_data = file_info->chan_data;
+
+    fprintf (output, "\n");
+    fprintf (output, "%16s:%12s\n", "format", file_info->format);
+
+    if (file_info->mode & MODE_FLOAT)
         fprintf (output, "%16s:%12s\n", "bit depth", "32-bit FLT");
-    else if (dsd)
+    else if (file_info->dsd)
         fprintf (output, "%16s:%12s\n", "bit depth", "1-bit DSD");
     else
-        fprintf (output, "%16s:%8d-bit\n", "bit depth", bits_per_sample);
-    fprintf (output, "%16s:%12d\n", "sample rate", dsd ? sample_rate * 8 : sample_rate);
-    fprintf (output, "%16s:%12s\n", "duration", string_time ((double) total_samples / sample_rate));
+        fprintf (output, "%16s:%8d-bit\n", "bit depth", file_info->bits_per_sample);
+
+    fprintf (output, "%16s:%12d\n", "sample rate", file_info->dsd ? file_info->sample_rate * 8 : file_info->sample_rate);
+    fprintf (output, "%16s:%12s\n", "duration", string_time ((double) file_info->total_samples / file_info->sample_rate));
+
+    if (file_info->errors)
+        fprintf (output, "%16s:%12d\n", "errors", file_info->errors);
+
     fprintf (output, "\n");
 
-    if (num_channels > 1) {
+    if (file_info->num_channels > 0) {
         fprintf (output, "%16s:  ", "channels");
-        for (int chan = 0; chan < num_channels; ++chan)
-            fputs (string_channel (chan, channel_mask, 12), output);
+        for (int chan = 0; chan < file_info->num_channels; ++chan)
+            fputs (string_channel (chan, file_info->channel_mask, 12), output);
         fprintf (output, "\n");
 
-        for (int i = 0; i < 17 + num_channels * 12; ++i)
+        for (int i = 0; i < 17 + file_info->num_channels * 12; ++i)
             fputc ('-', output);
 
         fprintf (output, "\n");
     }
 
-    if (dxd) {
+    if (file_info->dxd) {
         fprintf (output, "%16s:", "DSD detected");
-        for (int chan = 0; chan < num_channels; ++chan)
+        for (int chan = 0; chan < file_info->num_channels; ++chan)
             if (!chan_data [chan].valid_dsd_sectors)
                 fprintf (output, "%12s", "** no **");
             else if (!chan_data [chan].no_dsd_sectors)
@@ -270,38 +350,38 @@ static int analyze_file (FILE *output, char *filename)
         fprintf (output, "\n");
 
         // fprintf (output, "%16s:", "invalid sectors");
-        // for (int chan = 0; chan < num_channels; ++chan)
+        // for (int chan = 0; chan < file_info->num_channels; ++chan)
         //     fprintf (output, "%12d", chan_data [chan].no_dsd_sectors);
         // fprintf (output, "\n");
 
         // fprintf (output, "%16s:", "valid sectors");
-        // for (int chan = 0; chan < num_channels; ++chan)
+        // for (int chan = 0; chan < file_info->num_channels; ++chan)
         //     fprintf (output, "%12d", chan_data [chan].valid_dsd_sectors);
         // fprintf (output, "\n");
     }
 
     fprintf (output, "%16s:", "min value");
-    for (int chan = 0; chan < num_channels; ++chan)
+    for (int chan = 0; chan < file_info->num_channels; ++chan)
         fprintf (output, "%12f", chan_data [chan].min_value);
     fprintf (output, "\n");
 
     fprintf (output, "%16s:", "max value");
-    for (int chan = 0; chan < num_channels; ++chan)
+    for (int chan = 0; chan < file_info->num_channels; ++chan)
         fprintf (output, "%12f", chan_data [chan].max_value);
     fprintf (output, "\n");
 
     fprintf (output, "%16s:", "ave value");
-    for (int chan = 0; chan < num_channels; ++chan)
+    for (int chan = 0; chan < file_info->num_channels; ++chan)
         fprintf (output, "%12f", chan_data [chan].value_sum / chan_data [chan].num_samples);
     fprintf (output, "\n");
 
     fprintf (output, "%16s:", "ave magnitude");
-    for (int chan = 0; chan < num_channels; ++chan)
+    for (int chan = 0; chan < file_info->num_channels; ++chan)
         fprintf (output, "%12f", chan_data [chan].abs_value_sum / chan_data [chan].num_samples);
     fprintf (output, "\n");
 
     fprintf (output, "%16s:", "99.9% magnitude");
-    for (int chan = 0; chan < num_channels; ++chan) {
+    for (int chan = 0; chan < file_info->num_channels; ++chan) {
         double magnitude = population_to_magnitude (0.999, chan_data + chan);
         if (magnitude > chan_data [chan].max_value) magnitude = chan_data [chan].max_value;
         else if (magnitude < chan_data [chan].min_value) magnitude = chan_data [chan].min_value;
@@ -311,37 +391,21 @@ static int analyze_file (FILE *output, char *filename)
 
 #ifdef THRESHOLD
     fprintf (output, "%16s:", "threshold");
-    for (int chan = 0; chan < num_channels; ++chan)
+    for (int chan = 0; chan < file_info->num_channels; ++chan)
         fprintf (output, "%12f", chan_data [chan].threshold * 100.0 / chan_data [chan].num_samples);
     fprintf (output, "   (%.6f)", THRESHOLD);
     fprintf (output, "\n");
 #endif
 
     fprintf (output, "%16s:", "rms level");
-    for (int chan = 0; chan < num_channels; ++chan)
+    for (int chan = 0; chan < file_info->num_channels; ++chan)
         fprintf (output, "%9.2f dB", log10 (chan_data [chan].rms_sum / chan_data [chan].num_samples / 0.5) * 10);
     fprintf (output, "\n");
 
     fprintf (output, "%16s:", "peak level");
-    for (int chan = 0; chan < num_channels; ++chan)
+    for (int chan = 0; chan < file_info->num_channels; ++chan)
         fprintf (output, "%9.2f dB", log10 (chan_data [chan].peak_rms_level / 0.5) * 10);
     fprintf (output, "\n\n");
-
-    WavpackCloseFile (cxt);
-    free (source_buffer);
-    free (float_buffer);
-    free (chan_data);
-
-    if (qmode & QMODE_DSD_AUDIO) {
-        decimateDSDdestroy (decimator);
-        free (dsd_samples);
-    }
-
-    if (dxd)
-        PilotDetectDestroy (detector);
-
-    fprintf (output, "read %ld samples successfully, processed %ld samples\n", total_samples, samples_processed);
-    return 0;
 }
 
 static const char *speakers [] = {
@@ -483,4 +547,18 @@ static double population_to_magnitude (double population, ChannelData *chan_data
 
     fprintf (stderr, "fall through population check!\n");
     return 0.0;
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+static int convert_dsd_to_dxd (char *infilename, char *outfilename)
+{
+    return 0;
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+static int convert_dxd_to_dsd (char *infilename, char *outfilename)
+{
+    return 0;
 }
