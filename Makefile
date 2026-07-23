@@ -15,8 +15,8 @@ generate-dsd: generate-dsd.c modulator.c modulator.h dsd-utils.c dsd-utils.h Mak
 generate-dxd: generate-dxd.c dsd-utils.c dsd-utils.h biquad.c biquad.h Makefile
 	$(CC) -Wall -O2 generate-dxd.c dsd-utils.c biquad.c -lm -o generate-dxd
 
-decode-dxd: decode-dxd.c modulator.c modulator.h dsd-utils.c dsd-utils.h Makefile
-	$(CC) -Wall -Ofast decode-dxd.c modulator.c dsd-utils.c biquad.c workers.c -lm -o decode-dxd
+decode-dxd: decode-dxd.c decoder.c decoder.h modulator.c modulator.h dsd-utils.c dsd-utils.h Makefile
+	$(CC) -Wall -Ofast decode-dxd.c decoder.c modulator.c dsd-utils.c biquad.c workers.c -lm -o decode-dxd
 
 extract-dsd: extract-dsd.c dsd-utils.c dsd-utils.h Makefile
 	$(CC) -Wall -O2 extract-dsd.c dsd-utils.c biquad.c -lm -o extract-dsd

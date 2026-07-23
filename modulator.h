@@ -1,13 +1,15 @@
 ////////////////////////////////////////////////////////////////////////////
 //                           **** MODULATOR ****                          //
 //                       Simple PCM to DSD Modulator                      //
-//                    Float to Integer Audio Decimation                   //
 //                     Copyright (c) 2026 David Bryant                    //
 //                          All Rights Reserved.                          //
 //      Distributed under the BSD Software License (see license.txt)      //
 ////////////////////////////////////////////////////////////////////////////
 
 // modulator.h
+
+#ifndef MODULATOR_H
+#define MODULATOR_H
 
 #include <stdlib.h>
 #include <stdint.h>
@@ -80,4 +82,6 @@ void modulateFree (Modulate *cxt);
 
 #ifdef __cplusplus
 }
+#endif
+
 #endif
