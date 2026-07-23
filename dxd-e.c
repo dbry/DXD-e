@@ -29,8 +29,10 @@ typedef struct {
 
 static WavpackFileInfo *analyze_file (FILE *output, char *filename, char *error);
 static void display_file_info (FILE *output, WavpackFileInfo *file_info);
-static int convert_dsd_to_dxd (char *infilename, char *outfilename);
-static int convert_dxd_to_dsd (char *infilename, char *outfilename);
+static int convert_dsd_to_dxd (char *infilename, char *outfilename, char *error);
+static int convert_dxd_to_dsd (char *infilename, char *outfilename, char *error);
+
+static int embed_dsd = 1, embed_pilot = 1;
 
 int main (int argc, char **argv)
 {
@@ -54,20 +56,14 @@ int main (int argc, char **argv)
                 if (*long_param++ == '=')
                     break;
 
-            // if (!strncmp (long_option, "pitch", 5)) {                   // --pitch
-            //     double pitch_cents = strtod (long_param, NULL);
-
-            //     if (pitch_cents < -2400 || pitch_cents > 2400) {
-            //         fprintf (stderr, "invalid pitch shift, must be +/- 2400 cents (2 octaves)!\n");
-            //         return 1;
-            //     }
-
-            //     pitch_ratio = pow (2.0, pitch_cents / 1200.0);
-            // }
-            // else {
+            if (!strcmp (long_option, "no-embed"))                          // --no-embed
+                embed_dsd = 0;
+            else if (!strcmp (long_option, "no-pilot"))                     // --no-pilot
+                embed_pilot = 0;
+            else {
                 fprintf (stderr, "unknown option: %s !\n", long_option);
                 return 1;
-            // }
+            }
         }
 #if defined (_WIN32)
         else if ((**argv == '-' || **argv == '/') && (*argv)[1])
@@ -104,6 +100,16 @@ int main (int argc, char **argv)
         return 1;
     }
 
+    if (outfilename && !overwrite) {
+        FILE *test_read_open = fopen (outfilename, "rb");
+        if (test_read_open) {
+            fclose (test_read_open);
+            fprintf (stderr, "output file %s exists, use -y to overwrite!\n", outfilename);
+            return 1;
+        }
+    }
+
+    fprintf (stderr, "analyzing file %s...\n", infilename);
     info = analyze_file (stdout, infilename, error);
 
     if (!info) {
@@ -114,26 +120,28 @@ int main (int argc, char **argv)
     display_file_info (stdout, info);
 
     if (outfilename) {
-        if (!overwrite) {
-            FILE *test_read_open = fopen (outfilename, "rb");
-            if (test_read_open) {
-                fclose (test_read_open);
-                fprintf (stderr, "output file %s exists, use -y to overwrite!\n", outfilename);
-                res = 1;
-            }
-        }
-
         if (info->dsd) {
-            fprintf (stderr, "converting %s file %s to DXD-e file %s (with embedded DSD)...\n",
-                info->format, infilename, outfilename);
+            if (embed_dsd)
+                fprintf (stderr, "converting %s file %s to DXD%d-e file %s (%s)...\n",
+                    info->format, infilename, info->sample_rate / 1000, outfilename,
+                    embed_pilot ? "with embedded DSD and pilot" : "with embedded DSD only");
+            else
+                fprintf (stderr, "converting %s file %s to DXD%d file %s (no embedded DSD)...\n",
+                    info->format, infilename, info->sample_rate / 1000, outfilename);
 
-            res = convert_dsd_to_dxd (infilename, outfilename);
+            res = convert_dsd_to_dxd (infilename, outfilename, error);
+
+            if (res)
+                fprintf (stderr, "error: can't convert file %s, %s!\n", infilename, error);
         }
         else if (info->dxd) {
             fprintf (stderr, "converting %s file %s to DSD file %s...\n",
                 info->format, infilename, outfilename);
 
-            res = convert_dxd_to_dsd (infilename, outfilename);
+            res = convert_dxd_to_dsd (infilename, outfilename, error);
+
+            if (res)
+                fprintf (stderr, "error: can't convert file %s, %s!\n", infilename, error);
         }
         else {
             fprintf (stderr, "error: can't convert file %s, not DSD or DXD!\n", infilename);
@@ -145,6 +153,8 @@ int main (int argc, char **argv)
     free (info);
     return res;
 }
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #define BUFFER_SAMPLES  1048576
 
@@ -450,6 +460,7 @@ static char *string_channel (int channel, int channel_mask, int center_width)
 }
 
 // not threadsafe!
+// don't use more than one instance in a single printf()!
 static char *string_time (double seconds)
 {
     static char time_string [32];
@@ -551,14 +562,229 @@ static double population_to_magnitude (double population, ChannelData *chan_data
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-static int convert_dsd_to_dxd (char *infilename, char *outfilename)
+// This structure and function are used to write completed WavPack blocks in
+// a device independent way.
+
+typedef struct {
+    uint32_t bytes_written, first_block_size;
+    FILE *file;
+    int error;
+} write_id;
+
+static int DoWriteFile (FILE *hFile, void *lpBuffer, uint32_t nNumberOfBytesToWrite, uint32_t *lpNumberOfBytesWritten)
 {
+    uint32_t bcount;
+
+    *lpNumberOfBytesWritten = 0;
+
+    while (nNumberOfBytesToWrite) {
+        bcount = (uint32_t) fwrite ((unsigned char *) lpBuffer + *lpNumberOfBytesWritten, 1, nNumberOfBytesToWrite, hFile);
+
+        if (bcount) {
+            *lpNumberOfBytesWritten += bcount;
+            nNumberOfBytesToWrite -= bcount;
+        }
+        else
+            break;
+    }
+
+    return !ferror (hFile);
+}
+
+static int write_block (void *id, void *data, int32_t length)
+{
+    write_id *wid = (write_id *) id;
+    uint32_t bcount;
+
+    if (wid->error)
+        return 0;
+
+    if (wid && wid->file && data && length) {
+        if (!DoWriteFile (wid->file, data, length, &bcount) || bcount != length) {
+            fclose (wid->file);
+            wid->file = NULL;
+            wid->error = 1;
+            return 0;
+        }
+        else {
+            wid->bytes_written += length;
+
+            if (!wid->first_block_size)
+                wid->first_block_size = bcount;
+        }
+    }
+
+    return 1;
+}
+
+static int convert_dsd_to_dxd (char *infilename, char *outfilename, char *error)
+{
+    int flags = OPEN_DSD_NATIVE | (4 << OPEN_THREADS_SHFT);
+    WavpackContext *incxt = WavpackOpenFileInput (infilename, error, flags, 0), *outcxt;
+    WavpackFileInfo *file_info;
+    WavpackConfig config = {};
+    write_id wv_file = {};
+
+    if (!incxt)
+        return 1;
+
+    file_info = calloc (1, sizeof (WavpackFileInfo));
+    file_info->total_samples = WavpackGetNumSamples64 (incxt);
+    file_info->bytes_per_sample = WavpackGetBytesPerSample (incxt);
+    file_info->bits_per_sample = WavpackGetBitsPerSample (incxt);
+    file_info->channel_mask = WavpackGetChannelMask (incxt);
+    file_info->num_channels = WavpackGetNumChannels (incxt);
+    file_info->sample_rate = WavpackGetSampleRate (incxt);
+    file_info->qmode = WavpackGetQualifyMode (incxt);
+    file_info->mode = WavpackGetMode (incxt);
+
+    if (!(file_info->qmode & QMODE_DSD_AUDIO)) {
+        strcpy (error, "file not DSD audio mode");
+        WavpackCloseFile (incxt);
+        free (file_info);
+        return 1;
+    }
+
+    outcxt = WavpackOpenFileOutput (write_block, &wv_file, NULL);
+    wv_file.file = fopen (outfilename, "w+b");
+
+    if (wv_file.file == NULL) {
+        strcpy (error, "can't create output file");
+        WavpackCloseFile (outcxt);
+        WavpackCloseFile (incxt);
+        free (file_info);
+        return 1;
+    }
+
+    config.bits_per_sample = 24;
+    config.bytes_per_sample = 3;
+    config.sample_rate = file_info->sample_rate;
+    config.num_channels = file_info->num_channels;
+    config.channel_mask = file_info->channel_mask;
+    config.worker_threads = 4;
+
+    if (!WavpackSetConfiguration64 (outcxt, &config, file_info->total_samples, NULL)) {
+        strcpy (error, WavpackGetErrorMessage (outcxt));
+        fclose (wv_file.file);
+        WavpackCloseFile (outcxt);
+        WavpackCloseFile (incxt);
+        free (file_info);
+        return 1;
+    }
+
+    WavpackPackInit (outcxt);
+
+    int sector_samples = file_info->sample_rate / 75;
+    int buffer_samples = BUFFER_SAMPLES / sector_samples * sector_samples;
+    int nchans = file_info->num_channels;
+
+    int32_t *source_buffer = malloc (buffer_samples * sizeof (int32_t) * nchans);
+    int64_t samples_remaining = file_info->total_samples, samples_processed = 0;
+    unsigned char *dsd_buffer = malloc (buffer_samples * sizeof (char) * nchans);
+    DecimateDSD *decimator = decimateDSDinit (nchans, 0);
+    EmbedContext *dsd_embedder = NULL;
+    int dsd_samples = 0;
+
+    if (embed_dsd)
+        dsd_embedder = dsd_embed_init (nchans, embed_pilot ? EMBED_PILOT_SIGNAL : 0);
+
+    while (1) {
+        int samples_to_read = buffer_samples - dsd_samples, samples_read, samples_decimated;
+
+        if (samples_to_read > samples_remaining)
+            samples_to_read = samples_remaining;
+
+        samples_read = WavpackUnpackSamples (incxt, source_buffer, samples_to_read);
+
+        if (samples_read != samples_to_read) {
+            strcpy (error, "file exhausted prematurely");
+            WavpackCloseFile (incxt);
+            WavpackCloseFile (outcxt);
+            fclose (wv_file.file);
+            free (file_info->chan_data);
+            free (file_info);
+            return 1;
+        }
+
+        samples_remaining -= samples_read;
+
+        for (int i = 0; i < samples_read * nchans; ++i)
+            dsd_buffer [i + dsd_samples * nchans] = source_buffer [i] & 0xff;
+
+        samples_decimated = decimateDSDrun (decimator, dsd_buffer + dsd_samples * nchans, samples_read ? samples_read : -1, source_buffer);
+        dsd_samples += samples_read;
+
+        if (!samples_decimated)
+            break;
+
+        if (dsd_embedder) {
+            dsd_embed_run (dsd_embedder, source_buffer, dsd_buffer, samples_decimated);
+
+            if (dsd_samples > samples_decimated) {
+                memmove (dsd_buffer, dsd_buffer + samples_decimated * nchans, (dsd_samples - samples_decimated) * nchans);
+                dsd_samples -= samples_decimated;
+            }
+            else
+                dsd_samples = 0;
+        }
+        else
+            dsd_samples = 0;
+
+        if (!WavpackPackSamples (outcxt, source_buffer, samples_decimated)) {
+            strcpy (error, WavpackGetErrorMessage (outcxt));
+            WavpackCloseFile (incxt);
+            WavpackCloseFile (outcxt);
+            fclose (wv_file.file);
+            free (file_info->chan_data);
+            free (file_info);
+            return 1;
+        }
+
+        samples_processed += samples_decimated;
+    }
+
+    if (!WavpackFlushSamples (outcxt)) {
+        strcpy (error, WavpackGetErrorMessage (outcxt));
+        WavpackCloseFile (incxt);
+        WavpackCloseFile (outcxt);
+        fclose (wv_file.file);
+        free (file_info->chan_data);
+        free (file_info);
+        return 1;
+    }
+
+    if (WavpackGetSampleIndex64 (outcxt) != file_info->total_samples) {
+        strcpy (error, "incorrect number of samples written");
+        WavpackCloseFile (incxt);
+        WavpackCloseFile (outcxt);
+        fclose (wv_file.file);
+        free (file_info->chan_data);
+        free (file_info);
+        return 1;
+    }
+
+    if (WavpackGetNumErrors (incxt))
+        fprintf (stderr, "warning: %d errors detected!\n", WavpackGetNumErrors (incxt));
+
+    WavpackCloseFile (incxt);
+    WavpackCloseFile (outcxt);
+    fclose (wv_file.file);
+
+    if (dsd_embedder)
+        dsd_embed_destroy (dsd_embedder);
+
+    decimateDSDdestroy (decimator);
+    free (file_info->chan_data);
+    free (file_info);
+    free (source_buffer);
+    free (dsd_buffer);
+
     return 0;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-static int convert_dxd_to_dsd (char *infilename, char *outfilename)
+static int convert_dxd_to_dsd (char *infilename, char *outfilename, char *error)
 {
     return 0;
 }
