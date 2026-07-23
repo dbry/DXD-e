@@ -23,7 +23,7 @@ Decoder *decodeInit (int num_channels, int dsd_encode_level)
     decoder->channels = calloc (num_channels, sizeof (DecoderChannel));
     decoder->decimator = decimateDSDinit (0, 0);
     decoder->modulator = modulateInit (num_channels, IDLE_LEVEL, MODULATE_MULTITHREADED | MODULATOR_ALIGN_EMBEDDED);
-    decoder->pilot_detector = PilotDetectInit (num_channels);
+    decoder->pilot_detector = pilotDetectInit (num_channels);
     decoder->float_buffer = calloc (sizeof (float), BUFSAMPLES * num_channels);
     decoder->embedded_buffer = calloc (sizeof (char), BUFSAMPLES * num_channels);
     decoder->modulated_buffer = calloc (sizeof (char), BUFSAMPLES * num_channels);
@@ -91,7 +91,7 @@ int decodeProcess (Decoder *cxt, const int32_t *source, int in_samples, unsigned
                                 if (cxt->source_samples < BUFSAMPLES * (b + 1))
                                     scan_samples = cxt->source_samples - BUFSAMPLES * b;
 
-                                chan->dsd_pilot_valid [b] = PilotDetectChannelRun (cxt->pilot_detector, cxt->source_buffer + BUFSAMPLES * b * cxt->nchans, c, scan_samples);
+                                chan->dsd_pilot_valid [b] = pilotDetectChannelRun (cxt->pilot_detector, cxt->source_buffer + BUFSAMPLES * b * cxt->nchans, c, scan_samples);
 
                                 if (!chan->dsd_pilot_valid [b])
                                     chan->next_state = chan->state = Generating;
@@ -109,7 +109,7 @@ int decodeProcess (Decoder *cxt, const int32_t *source, int in_samples, unsigned
 
                     case Generating:
                         if (samples_read) {
-                            chan->dsd_pilot_valid [2] = PilotDetectChannelRun (cxt->pilot_detector, cxt->source_buffer + BUFSAMPLES * 2 * cxt->nchans, c, samples_read);
+                            chan->dsd_pilot_valid [2] = pilotDetectChannelRun (cxt->pilot_detector, cxt->source_buffer + BUFSAMPLES * 2 * cxt->nchans, c, samples_read);
 
                             if (chan->dsd_pilot_valid [0] && chan->dsd_pilot_valid [1] && chan->dsd_pilot_valid [2]) {
                                 modulateSetAlignment (cxt->modulator, c, 1);
@@ -121,7 +121,7 @@ int decodeProcess (Decoder *cxt, const int32_t *source, int in_samples, unsigned
 
                     case Syncing:
                         if (samples_read) {
-                            chan->dsd_pilot_valid [2] = PilotDetectChannelRun (cxt->pilot_detector, cxt->source_buffer + BUFSAMPLES * 2 * cxt->nchans, c, samples_read);
+                            chan->dsd_pilot_valid [2] = pilotDetectChannelRun (cxt->pilot_detector, cxt->source_buffer + BUFSAMPLES * 2 * cxt->nchans, c, samples_read);
 
                             if (chan->dsd_pilot_valid [2])
                                 chan->next_state = Embedding;
@@ -135,7 +135,7 @@ int decodeProcess (Decoder *cxt, const int32_t *source, int in_samples, unsigned
 
                     case Embedding:
                         if (samples_read) {
-                            chan->dsd_pilot_valid [2] = PilotDetectChannelRun (cxt->pilot_detector, cxt->source_buffer + BUFSAMPLES * 2 * cxt->nchans, c, samples_read);
+                            chan->dsd_pilot_valid [2] = pilotDetectChannelRun (cxt->pilot_detector, cxt->source_buffer + BUFSAMPLES * 2 * cxt->nchans, c, samples_read);
 
                             if (!chan->dsd_pilot_valid [1])
                                 chan->next_state = Generating;
@@ -191,7 +191,7 @@ int decodeProcess (Decoder *cxt, const int32_t *source, int in_samples, unsigned
                             final_buf [i] = cxt->embedded_buffer [i * cxt->nchans + c];
                         }
 
-                        dsd_transition (cxt->decimator, cxt->total_dsd_samples / cxt->nchans, initial_buf, final_buf, samples_generated);
+                        transitionDSDstreams (cxt->decimator, cxt->total_dsd_samples / cxt->nchans, initial_buf, final_buf, samples_generated);
 
                         for (int i = 0; i < samples_generated; ++i)
                             composite_buffer [i * cxt->nchans + c] = initial_buf [i];
@@ -205,7 +205,7 @@ int decodeProcess (Decoder *cxt, const int32_t *source, int in_samples, unsigned
                             final_buf [i] = cxt->modulated_buffer [i * cxt->nchans + c];
                         }
 
-                        dsd_transition (cxt->decimator, cxt->total_dsd_samples / cxt->nchans, initial_buf, final_buf, samples_generated);
+                        transitionDSDstreams (cxt->decimator, cxt->total_dsd_samples / cxt->nchans, initial_buf, final_buf, samples_generated);
 
                         for (int i = 0; i < samples_generated; ++i)
                             composite_buffer [i * cxt->nchans + c] = initial_buf [i];
@@ -256,7 +256,7 @@ void decodeFree (Decoder *cxt)
     free (cxt->composite_buffer);
     modulateFree (cxt->modulator);
     decimateDSDdestroy (cxt->decimator);
-    PilotDetectDestroy (cxt->pilot_detector);
+    pilotDetectDestroy (cxt->pilot_detector);
     free (cxt->channels);
     free (cxt);
 }

@@ -237,9 +237,9 @@ void decimateDSDdestroy (DecimateDSD *cxt)
 
 static void shaper_init (Biquad *f, double a0, double a1, double a2, double a3, double a4, double b1, double b2, double b3, double b4);
 
-EmbedContext *dsd_embed_init (int nchans, int flags)
+EmbedDSD *embedDSDinit (int nchans, int flags)
 {
-    EmbedContext *context = (EmbedContext *) calloc (1, sizeof (EmbedContext));
+    EmbedDSD *context = (EmbedDSD *) calloc (1, sizeof (EmbedDSD));
     uint32_t seed = 0x31415926;
 
     context->flags = flags;
@@ -286,7 +286,7 @@ EmbedContext *dsd_embed_init (int nchans, int flags)
 // dst_buffer[] is 24-bit raw DXD data (decimated DSD)
 // DSD data is embedded into DXD data with parity bit and noise-shaping into dst_buffer[]
 
-void dsd_embed_run (EmbedContext *context, int32_t *dst_buffer, unsigned char *src_buffer, int nsamples)
+void embedDSDrun (EmbedDSD *context, int32_t *dst_buffer, unsigned char *src_buffer, int nsamples)
 {
     int chan = 0;
 
@@ -311,7 +311,7 @@ void dsd_embed_run (EmbedContext *context, int32_t *dst_buffer, unsigned char *s
     }
 }
 
-void dsd_embed_destroy (EmbedContext *context)
+void embedDSDdestroy (EmbedDSD *context)
 {
     free (context->parity_shifters);
     free (context->noise_feedback);
@@ -351,7 +351,7 @@ static void shaper_init (Biquad *f, double a0, double a1, double a2, double a3, 
 // the embedded DSD.
 ////////////////////////////////////////////////////////////////////////////
 
-PilotDetect *PilotDetectInit (int nchans)
+PilotDetect *pilotDetectInit (int nchans)
 {
     PilotDetect *context = (PilotDetect *) calloc (1, sizeof (PilotDetect));
     uint64_t shifter = PILOT_SEQUENCE;
@@ -368,7 +368,7 @@ PilotDetect *PilotDetectInit (int nchans)
     return context;
 }
 
-int PilotDetectChannelRun (PilotDetect *context, const int32_t *src_buffer, int chan, int nsamples)
+int pilotDetectChannelRun (PilotDetect *context, const int32_t *src_buffer, int chan, int nsamples)
 {
     PilotDetectChannel *chanptr = context->chans + chan;
     int retval = chanptr->locked;
@@ -425,7 +425,7 @@ int PilotDetectChannelRun (PilotDetect *context, const int32_t *src_buffer, int 
     return retval;
 }
 
-void PilotDetectDestroy (PilotDetect *context)
+void pilotDetectDestroy (PilotDetect *context)
 {
     free (context->chans);
     free (context);
@@ -459,7 +459,7 @@ static double total_abs_error, total_rms_error;
 static int num_transitions;
 #endif
 
-void dsd_transition (DecimateDSD *decimator, int64_t samples, unsigned char *initial_dsd, const unsigned char *final_dsd, int byte_count)
+void transitionDSDstreams (DecimateDSD *decimator, int64_t samples, unsigned char *initial_dsd, const unsigned char *final_dsd, int byte_count)
 {
     int num_eval_points = byte_count - 12, num_pcm_values = byte_count - 6, best_eval_point = 0;
     evalPoint *evalPoints = calloc (num_eval_points, sizeof (evalPoint));
@@ -567,7 +567,7 @@ void dsd_transition (DecimateDSD *decimator, int64_t samples, unsigned char *ini
     free (final_pcm);
 }
 
-void dsd_transition_dumpstats (FILE *stream)
+void transitionDSDdumpstats (FILE *stream)
 {
 #ifdef STATISTICS
     if (num_transitions)

@@ -221,7 +221,7 @@ static WavpackFileInfo *analyze_file (FILE *output, char *filename, char *error)
     }
 
     if (file_info->dxd)
-        detector = PilotDetectInit (file_info->num_channels);
+        detector = pilotDetectInit (file_info->num_channels);
 
     while (1) {
         int samples_to_read = buffer_samples, samples_read, samples_ready;
@@ -285,7 +285,7 @@ static WavpackFileInfo *analyze_file (FILE *output, char *filename, char *error)
                     if (samples > samples_to_scan)
                         samples = samples_to_scan;
 
-                    if (PilotDetectChannelRun (detector, source_buffer + buffer_index, chan, samples))
+                    if (pilotDetectChannelRun (detector, source_buffer + buffer_index, chan, samples))
                         chan_data [chan].valid_dsd_sectors++;
                     else
                         chan_data [chan].no_dsd_sectors++;
@@ -308,7 +308,7 @@ static WavpackFileInfo *analyze_file (FILE *output, char *filename, char *error)
     }
 
     if (file_info->dxd)
-        PilotDetectDestroy (detector);
+        pilotDetectDestroy (detector);
 
     return file_info;
 }
@@ -682,11 +682,11 @@ static int convert_dsd_to_dxd (char *infilename, char *outfilename, char *error)
     int64_t samples_remaining = file_info->total_samples, samples_processed = 0;
     unsigned char *dsd_buffer = malloc (buffer_samples * sizeof (char) * nchans);
     DecimateDSD *decimator = decimateDSDinit (nchans, 0);
-    EmbedContext *dsd_embedder = NULL;
+    EmbedDSD *dsd_embedder = NULL;
     int dsd_samples = 0;
 
     if (embed_dsd)
-        dsd_embedder = dsd_embed_init (nchans, embed_pilot ? EMBED_PILOT_SIGNAL : 0);
+        dsd_embedder = embedDSDinit (nchans, embed_pilot ? EMBED_PILOT_SIGNAL : 0);
 
     while (1) {
         int samples_to_read = buffer_samples - dsd_samples, samples_read, samples_decimated;
@@ -718,7 +718,7 @@ static int convert_dsd_to_dxd (char *infilename, char *outfilename, char *error)
             break;
 
         if (dsd_embedder) {
-            dsd_embed_run (dsd_embedder, source_buffer, dsd_buffer, samples_decimated);
+            embedDSDrun (dsd_embedder, source_buffer, dsd_buffer, samples_decimated);
 
             if (dsd_samples > samples_decimated) {
                 memmove (dsd_buffer, dsd_buffer + samples_decimated * nchans, (dsd_samples - samples_decimated) * nchans);
@@ -771,7 +771,7 @@ static int convert_dsd_to_dxd (char *infilename, char *outfilename, char *error)
     fclose (wv_file.file);
 
     if (dsd_embedder)
-        dsd_embed_destroy (dsd_embedder);
+        embedDSDdestroy (dsd_embedder);
 
     decimateDSDdestroy (decimator);
     free (file_info->chan_data);

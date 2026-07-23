@@ -14,7 +14,7 @@ int main (int argc, char **argv)
     int64_t total_dsd_samples = 0, total_pcm_samples = 0;
     int source_head = 0, decimate_tail = 0, embed_tail = 0;
     int nchans = 2, embed_dsd = 0, flags = 0, filter = 0;
-    EmbedContext *dsd_embedder = NULL;
+    EmbedDSD *dsd_embedder = NULL;
     DecimateDSD *dsd_decimator;
     unsigned char *src_buffer;
     int32_t *dst_buffer;
@@ -67,7 +67,7 @@ int main (int argc, char **argv)
     dsd_decimator = decimateDSDinit (nchans, filter ? DECIMATE_LOWPASS : 0);
 
     if (embed_dsd)
-        dsd_embedder = dsd_embed_init (nchans, flags);
+        dsd_embedder = embedDSDinit (nchans, flags);
 
     while (1) {
         int samples_read = fread (src_buffer + source_head * nchans, nchans, BUFSAMPLES - source_head, stdin);
@@ -87,7 +87,7 @@ int main (int argc, char **argv)
             decimated_samples = decimateDSDrun (dsd_decimator, NULL, -1, dst_buffer);
 
         if (dsd_embedder) {
-            dsd_embed_run (dsd_embedder, dst_buffer, src_buffer, decimated_samples);
+            embedDSDrun (dsd_embedder, dst_buffer, src_buffer, decimated_samples);
             embed_tail += decimated_samples;
         }
         else
@@ -119,7 +119,7 @@ int main (int argc, char **argv)
         fprintf (stderr, "%ld total DSD samples, %ld total PCM samples (without embedded DSD)\n", total_dsd_samples, total_pcm_samples);
 
     if (dsd_embedder)
-        dsd_embed_destroy (dsd_embedder);
+        embedDSDdestroy (dsd_embedder);
 
     decimateDSDdestroy (dsd_decimator);
     free (src_buffer);

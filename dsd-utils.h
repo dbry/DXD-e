@@ -82,7 +82,7 @@ typedef struct {
     float *noise_feedback;
     int64_t sample_index;
     int nchans, flags;
-} EmbedContext;
+} EmbedDSD;
 
 typedef struct {
     uint64_t channel_shifter, sample_index;
@@ -101,13 +101,13 @@ typedef struct {
 extern "C" {
 #endif
 
-EmbedContext *dsd_embed_init (int nchans, int flags);
-void dsd_embed_run (EmbedContext *embed_context, int32_t *dst_buffer, unsigned char *src_buffer, int nsamples);
-void dsd_embed_destroy (EmbedContext *embed_context);
+EmbedDSD *embedDSDinit (int nchans, int flags);
+void embedDSDrun (EmbedDSD *embed_context, int32_t *dst_buffer, unsigned char *src_buffer, int nsamples);
+void embedDSDdestroy (EmbedDSD *embed_context);
 
-PilotDetect *PilotDetectInit (int nchans);
-int PilotDetectChannelRun (PilotDetect *context, const int32_t *src_buffer, int chan, int nsamples);
-void PilotDetectDestroy (PilotDetect *context);
+PilotDetect *pilotDetectInit (int nchans);
+int pilotDetectChannelRun (PilotDetect *context, const int32_t *src_buffer, int chan, int nsamples);
+void pilotDetectDestroy (PilotDetect *context);
 
 #ifdef __cplusplus
 }
@@ -119,8 +119,8 @@ void PilotDetectDestroy (PilotDetect *context);
 extern "C" {
 #endif
 
-void dsd_transition (DecimateDSD *decimator, int64_t samples, unsigned char *initial_dsd, const unsigned char *final_dsd, int byte_count);
-void dsd_transition_dumpstats (FILE *stream);
+void transitionDSDstreams (DecimateDSD *decimator, int64_t samples, unsigned char *initial_dsd, const unsigned char *final_dsd, int byte_count);
+void transitionDSDdumpstats (FILE *stream);
 
 #ifdef __cplusplus
 }

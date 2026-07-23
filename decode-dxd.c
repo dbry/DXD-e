@@ -77,7 +77,7 @@ int main (int argc, char **argv)
         total_pcm_samples, total_dsd_samples, decodeTotalEmbeddedSamples (decoder),
         decodeTotalEmbeddedSamples (decoder) * 100.0 / total_dsd_samples / nchans);
 
-    dsd_transition_dumpstats (stderr);
+    transitionDSDdumpstats (stderr);
 
     decodeFree (decoder);
     free (source_buffer);

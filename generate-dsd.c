@@ -108,7 +108,7 @@ int main (int argc, char **argv)
             }
 
             if (toggle && buffer_count && output_generated == BUFFER_SAMPLES && buffer_count % nchans == c) {
-                dsd_transition (decimator, total_output_samples, initial_buf, final_buf, output_generated);
+                transitionDSDstreams (decimator, total_output_samples, initial_buf, final_buf, output_generated);
                 embedded_selected [c] ^= 1;
             }
 
@@ -127,7 +127,7 @@ int main (int argc, char **argv)
     }
 
     fprintf (stderr, "total samples: %ld read, %ld written\n", total_input_samples, total_output_samples);
-    dsd_transition_dumpstats (stderr);
+    transitionDSDdumpstats (stderr);
     decimateDSDdestroy (decimator);
     modulateFree (modulator);
 
