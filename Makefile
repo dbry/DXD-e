@@ -6,8 +6,8 @@ utils := dxd-e generate-dsd generate-dxd extract-dsd corrupt-dxd decode-dxd
 
 all: $(utils)
 
-dxd-e: dxd-e.c dsd-utils.c dsd-utils.h biquad.c biquad.h Makefile
-	$(CC) -Wall -Ofast dxd-e.c dsd-utils.c biquad.c -lm -lwavpack -o dxd-e
+dxd-e: dxd-e.c dsd-utils.c dsd-utils.h modulator.c modulator.h decoder.c decoder.h biquad.c biquad.h Makefile
+	$(CC) -Wall -Ofast dxd-e.c dsd-utils.c modulator.c decoder.c biquad.c workers.c -lm -lwavpack -o dxd-e
 
 generate-dsd: generate-dsd.c modulator.c modulator.h dsd-utils.c dsd-utils.h Makefile
 	$(CC) -Wall -Ofast generate-dsd.c modulator.c dsd-utils.c biquad.c workers.c -lm -o generate-dsd

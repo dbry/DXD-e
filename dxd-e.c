@@ -6,9 +6,11 @@
 
 #include <wavpack/wavpack.h>
 
-#include "modulator.h"
 #include "dsd-utils.h"
+#include "modulator.h"
+#include "decoder.h"
 
+#define BUFFER_SAMPLES  1048576
 // #define THRESHOLD 0.501171
 
 typedef struct {
@@ -27,12 +29,12 @@ typedef struct {
     uint32_t channel_mask;
 } WavpackFileInfo;
 
-static WavpackFileInfo *analyze_file (FILE *output, char *filename, char *error);
-static void display_file_info (FILE *output, WavpackFileInfo *file_info);
+static int convert_dxd_to_dsd (char *infilename, ChannelData *chan_data, char *outfilename, char *error);
 static int convert_dsd_to_dxd (char *infilename, char *outfilename, char *error);
-static int convert_dxd_to_dsd (char *infilename, char *outfilename, char *error);
+static void display_file_info (FILE *output, WavpackFileInfo *file_info);
+static WavpackFileInfo *analyze_file (char *filename, char *error);
 
-static int embed_dsd = 1, embed_pilot = 1;
+static int embed_dsd = 1, embed_pilot = 1, level = 3;
 
 int main (int argc, char **argv)
 {
@@ -73,6 +75,10 @@ int main (int argc, char **argv)
             while (*++*argv)
                 switch (**argv) {
 
+                    case '1': case '2': case '3': case '4': case '5':
+                        level = **argv - '0';
+                        break;
+
                     case 'Y': case 'y':
                         overwrite = 1;
                         break;
@@ -109,8 +115,7 @@ int main (int argc, char **argv)
         }
     }
 
-    fprintf (stderr, "analyzing file %s...\n", infilename);
-    info = analyze_file (stdout, infilename, error);
+    info = analyze_file (infilename, error);
 
     if (!info) {
         fprintf (stderr, "error in file %s: %s\n", infilename, error);
@@ -121,24 +126,13 @@ int main (int argc, char **argv)
 
     if (outfilename) {
         if (info->dsd) {
-            if (embed_dsd)
-                fprintf (stderr, "converting %s file %s to DXD%d-e file %s (%s)...\n",
-                    info->format, infilename, info->sample_rate / 1000, outfilename,
-                    embed_pilot ? "with embedded DSD and pilot" : "with embedded DSD only");
-            else
-                fprintf (stderr, "converting %s file %s to DXD%d file %s (no embedded DSD)...\n",
-                    info->format, infilename, info->sample_rate / 1000, outfilename);
-
             res = convert_dsd_to_dxd (infilename, outfilename, error);
 
             if (res)
                 fprintf (stderr, "error: can't convert file %s, %s!\n", infilename, error);
         }
         else if (info->dxd) {
-            fprintf (stderr, "converting %s file %s to DSD file %s...\n",
-                info->format, infilename, outfilename);
-
-            res = convert_dxd_to_dsd (infilename, outfilename, error);
+            res = convert_dxd_to_dsd (infilename, info->chan_data, outfilename, error);
 
             if (res)
                 fprintf (stderr, "error: can't convert file %s, %s!\n", infilename, error);
@@ -156,15 +150,13 @@ int main (int argc, char **argv)
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#define BUFFER_SAMPLES  1048576
-
 static void analyze_float_data (float *src, int num_samples, int num_channels, int sample_rate, ChannelData *chan_data);
 static void float_integer_data (int32_t *src, float *dst, int num_samples, int bps);
 static double population_to_magnitude (double population, ChannelData *chan_data);
 static char *string_channel (int channel, int channel_mask, int center_width);
 static char *string_time (double seconds);
 
-static WavpackFileInfo *analyze_file (FILE *output, char *filename, char *error)
+static WavpackFileInfo *analyze_file (char *filename, char *error)
 {
     int flags = OPEN_NORMALIZE | OPEN_DSD_NATIVE | (4 << OPEN_THREADS_SHFT);
     WavpackContext *cxt = WavpackOpenFileInput (filename, error, flags, 0);
@@ -172,6 +164,8 @@ static WavpackFileInfo *analyze_file (FILE *output, char *filename, char *error)
 
     if (!cxt)
         return NULL;
+
+    fprintf (stderr, "analyzing file \"%s\"...\n", filename);
 
     file_info = calloc (1, sizeof (WavpackFileInfo));
     file_info->total_samples = WavpackGetNumSamples64 (cxt);
@@ -211,6 +205,7 @@ static WavpackFileInfo *analyze_file (FILE *output, char *filename, char *error)
     int32_t *source_buffer = malloc (buffer_samples * sizeof (int32_t) * file_info->num_channels);
     float *float_buffer = malloc (buffer_samples * sizeof (float) * file_info->num_channels);
     int64_t samples_remaining = file_info->total_samples, samples_processed = 0;
+    uint32_t progress_divider = 0, percent;
     unsigned char *dsd_samples = NULL;
     DecimateDSD *decimator = NULL;
     PilotDetect *detector = NULL;
@@ -222,6 +217,11 @@ static WavpackFileInfo *analyze_file (FILE *output, char *filename, char *error)
 
     if (file_info->dxd)
         detector = pilotDetectInit (file_info->num_channels);
+
+    if (file_info->total_samples > 1000000) {
+        progress_divider = (file_info->total_samples + 50) / 100;
+        fprintf (stderr, "\rprogress: %d%% ", percent = 0); fflush (stderr);
+    }
 
     while (1) {
         int samples_to_read = buffer_samples, samples_read, samples_ready;
@@ -294,8 +294,18 @@ static WavpackFileInfo *analyze_file (FILE *output, char *filename, char *error)
                     samples_to_scan -= samples;
                 }
             }
+
+        if (progress_divider) {
+            int new_percent = samples_processed / progress_divider;
+
+            if (new_percent != percent) {
+                fprintf (stderr, "\rprogress: %d%% ", percent = new_percent);
+                fflush (stderr);
+            }
+        }
     }
 
+    fprintf (stderr, "\r...completed successfully\n");
     file_info->errors = WavpackGetNumErrors (cxt);
 
     WavpackCloseFile (cxt);
@@ -350,13 +360,11 @@ static void display_file_info (FILE *output, WavpackFileInfo *file_info)
     if (file_info->dxd) {
         fprintf (output, "%16s:", "DSD detected");
         for (int chan = 0; chan < file_info->num_channels; ++chan)
-            if (!chan_data [chan].valid_dsd_sectors)
-                fprintf (output, "%12s", "** no **");
-            else if (!chan_data [chan].no_dsd_sectors)
-                fprintf (output, "%12s", "** yes **");
-            else
+            if (chan_data [chan].valid_dsd_sectors)
                 fprintf (output, "%11.2f%%",
                     chan_data [chan].valid_dsd_sectors * 100.0 / (chan_data [chan].no_dsd_sectors + chan_data [chan].valid_dsd_sectors));
+            else
+                fprintf (output, "%12s", "** no **");
         fprintf (output, "\n");
 
         // fprintf (output, "%16s:", "invalid sectors");
@@ -538,25 +546,18 @@ static double population_to_magnitude (double population, ChannelData *chan_data
     }
 
     for (int i = 0; i < 100; ++i)
-        if (magnitude_histogram [i] == population_target) {
-            // fprintf (stderr, "%.6f: exact match at i = %d\n", population_target, i);
+        if (magnitude_histogram [i] == population_target)
             return i / 100.0;
-        }
         else if (magnitude_histogram [i] > population_target) {
             if (i) {
-                // fprintf (stderr, "%.6f: partial match at i = %d, hist [%d] = %ld, hist [%d] = %ld\n",
-                //    population_target, i, i, magnitude_histogram [i], i - 1, magnitude_histogram [i - 1]);
                 double delta = magnitude_histogram [i] - magnitude_histogram [i - 1];
                 double point = population_target - magnitude_histogram [i - 1];
                 return (i + point / delta) / 100.0;
             }
-            else {
-                // fprintf (stderr, "%.6f: partial match at i = 0, hist [0] = %ld\n", population_target, magnitude_histogram [0]);
+            else
                 return population_target / magnitude_histogram [0] / 100.0;
-            }
         }
 
-    fprintf (stderr, "fall through population check!\n");
     return 0.0;
 }
 
@@ -616,6 +617,8 @@ static int write_block (void *id, void *data, int32_t length)
 
     return 1;
 }
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 static int convert_dsd_to_dxd (char *infilename, char *outfilename, char *error)
 {
@@ -678,6 +681,7 @@ static int convert_dsd_to_dxd (char *infilename, char *outfilename, char *error)
     int buffer_samples = BUFFER_SAMPLES / sector_samples * sector_samples;
     int nchans = file_info->num_channels;
 
+    uint32_t progress_divider = 0, percent;
     int32_t *source_buffer = malloc (buffer_samples * sizeof (int32_t) * nchans);
     int64_t samples_remaining = file_info->total_samples, samples_processed = 0;
     unsigned char *dsd_buffer = malloc (buffer_samples * sizeof (char) * nchans);
@@ -685,8 +689,21 @@ static int convert_dsd_to_dxd (char *infilename, char *outfilename, char *error)
     EmbedDSD *dsd_embedder = NULL;
     int dsd_samples = 0;
 
-    if (embed_dsd)
+    if (embed_dsd) {
         dsd_embedder = embedDSDinit (nchans, embed_pilot ? EMBED_PILOT_SIGNAL : 0);
+
+        fprintf (stderr, "converting \"%s\" file %s to DXD%d-e file \"%s\" (%s)...\n",
+            file_info->format, infilename, file_info->sample_rate / 1000, outfilename,
+            embed_pilot ? "with embedded DSD and pilot" : "with embedded DSD only");
+    }
+    else
+        fprintf (stderr, "converting %s file \"%s\" to DXD%d file \"%s\" (no embedded DSD)...\n",
+            file_info->format, infilename, file_info->sample_rate / 1000, outfilename);
+
+    if (file_info->total_samples > 1000000) {
+        progress_divider = (file_info->total_samples + 50) / 100;
+        fprintf (stderr, "\rprogress: %d%% ", percent = 0); fflush (stderr);
+    }
 
     while (1) {
         int samples_to_read = buffer_samples - dsd_samples, samples_read, samples_decimated;
@@ -741,7 +758,18 @@ static int convert_dsd_to_dxd (char *infilename, char *outfilename, char *error)
         }
 
         samples_processed += samples_decimated;
+
+        if (progress_divider) {
+            int new_percent = samples_processed / progress_divider;
+
+            if (new_percent != percent) {
+                fprintf (stderr, "\rprogress: %d%% ", percent = new_percent);
+                fflush (stderr);
+            }
+        }
     }
+
+    fprintf (stderr, "\r...completed successfully\n");
 
     if (!WavpackFlushSamples (outcxt)) {
         strcpy (error, WavpackGetErrorMessage (outcxt));
@@ -784,7 +812,237 @@ static int convert_dsd_to_dxd (char *infilename, char *outfilename, char *error)
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-static int convert_dxd_to_dsd (char *infilename, char *outfilename, char *error)
+static int convert_dxd_to_dsd (char *infilename, ChannelData *chan_data, char *outfilename, char *error)
 {
+    int flags = (4 << OPEN_THREADS_SHFT), embedded_dsd = 0;
+    WavpackContext *incxt = WavpackOpenFileInput (infilename, error, flags, 0), *outcxt;
+    WavpackFileInfo *file_info;
+    WavpackConfig config = {};
+    write_id wv_file = {};
+
+    if (!incxt)
+        return 1;
+
+    file_info = calloc (1, sizeof (WavpackFileInfo));
+    file_info->total_samples = WavpackGetNumSamples64 (incxt);
+    file_info->bytes_per_sample = WavpackGetBytesPerSample (incxt);
+    file_info->bits_per_sample = WavpackGetBitsPerSample (incxt);
+    file_info->channel_mask = WavpackGetChannelMask (incxt);
+    file_info->num_channels = WavpackGetNumChannels (incxt);
+    file_info->sample_rate = WavpackGetSampleRate (incxt);
+    file_info->qmode = WavpackGetQualifyMode (incxt);
+    file_info->mode = WavpackGetMode (incxt);
+
+    if ((file_info->qmode & QMODE_DSD_AUDIO) || file_info->bits_per_sample < 24 ||
+        (file_info->sample_rate % 352800 != 0 && file_info->sample_rate % 384000 != 0)) {
+            strcpy (error, "file not DXD or DXD-e audio mode");
+            return 1;
+    }
+
+    double max_magnitude = 0.0, max_magnitude_999 = 0.0, gain = 1.0;
+
+    for (int c = 0; c < file_info->num_channels; ++c) {
+        double magnitude_999 = population_to_magnitude (0.999, chan_data + c);
+
+        if (fabs (chan_data [c].min_value) > max_magnitude)
+            max_magnitude = fabs (chan_data [c].min_value);
+
+        if (fabs (chan_data [c].max_value) > max_magnitude)
+            max_magnitude = fabs (chan_data [c].max_value);
+
+        if (magnitude_999 > fabs (chan_data [c].min_value))
+            magnitude_999 = fabs (chan_data [c].min_value);
+
+        if (magnitude_999 > fabs (chan_data [c].max_value))
+            magnitude_999 = fabs (chan_data [c].max_value);
+
+        if (magnitude_999 > max_magnitude_999)
+            max_magnitude_999 = magnitude_999;
+
+        embedded_dsd += chan_data [c].valid_dsd_sectors;
+    }
+
+    if (embedded_dsd)
+        printf ("embedded DSD detected, unity gain, max magnitude = %.6f, max 99.9%% magnitude = %.6f\n",
+            max_magnitude, max_magnitude_999);
+    else {
+        gain = fmin (fmin (0.72 / max_magnitude, 0.5 / max_magnitude_999), 1.00);
+        if (gain == 1.00)
+            printf ("embedded DSD not detected, no gain reduction, max magnitude = %.6f, max 99.9%% magnitude = %.6f\n",
+                max_magnitude, max_magnitude_999);
+        else
+            printf ("embedded DSD not detected, reducing gain by %.2f dB, max magnitude = %.6f, max 99.9%% magnitude = %.6f\n", log10 (gain) * -20.0,
+                max_magnitude, max_magnitude_999);
+    }
+
+    outcxt = WavpackOpenFileOutput (write_block, &wv_file, NULL);
+    wv_file.file = fopen (outfilename, "w+b");
+
+    if (wv_file.file == NULL) {
+        strcpy (error, "can't create output file");
+        WavpackCloseFile (outcxt);
+        WavpackCloseFile (incxt);
+        free (file_info);
+        return 1;
+    }
+
+    WavpackSetFileInformation (outcxt, "dff", WP_FORMAT_DFF);
+
+    config.bits_per_sample = 8;
+    config.bytes_per_sample = 1;
+    config.flags = CONFIG_HIGH_FLAG;
+    config.qmode = QMODE_DSD_MSB_FIRST;
+    config.sample_rate = file_info->sample_rate;
+    config.num_channels = file_info->num_channels;
+    config.channel_mask = file_info->channel_mask;
+    config.worker_threads = 4;
+
+    if (!WavpackSetConfiguration64 (outcxt, &config, file_info->total_samples, NULL)) {
+        strcpy (error, WavpackGetErrorMessage (outcxt));
+        fclose (wv_file.file);
+        WavpackCloseFile (outcxt);
+        WavpackCloseFile (incxt);
+        free (file_info);
+        return 1;
+    }
+
+    WavpackPackInit (outcxt);
+
+    int sector_samples = file_info->sample_rate / 75;
+    int buffer_samples = BUFFER_SAMPLES / sector_samples * sector_samples;
+    int nchans = file_info->num_channels;
+
+    int32_t *source_buffer = malloc (buffer_samples * sizeof (int32_t) * nchans);
+    int64_t samples_remaining = file_info->total_samples, samples_processed = 0;
+    unsigned char *dsd_buffer = malloc (buffer_samples * sizeof (char) * nchans);
+    uint32_t progress_divider = 0, percent;
+    Modulate *modulator = NULL;
+    Decoder *decoder = NULL;
+
+    if (embedded_dsd)
+        decoder = decodeInit (nchans, level);
+    else
+        modulator = modulateInit (nchans, level, MODULATE_MULTITHREADED);
+
+    fprintf (stderr, "converting %s file \"%s\" to DSD file \"%s\"...\n",
+        embedded_dsd ? "DXD-e" : "DXD", infilename, outfilename);
+
+    if (file_info->total_samples > 1000000) {
+        progress_divider = (file_info->total_samples + 50) / 100;
+        fprintf (stderr, "\rprogress: %d%% ", percent = 0); fflush (stderr);
+    }
+
+    while (1) {
+        int samples_to_read = buffer_samples, samples_read, output_generated;
+
+        if (samples_to_read > samples_remaining)
+            samples_to_read = samples_remaining;
+
+        samples_read = WavpackUnpackSamples (incxt, source_buffer, samples_to_read);
+
+        if (samples_read != samples_to_read) {
+            strcpy (error, "file exhausted prematurely");
+            WavpackCloseFile (incxt);
+            WavpackCloseFile (outcxt);
+            fclose (wv_file.file);
+            free (file_info->chan_data);
+            free (file_info);
+            return 1;
+        }
+
+        samples_remaining -= samples_read;
+
+        if (modulator) {
+            if (!(file_info->mode & MODE_FLOAT))
+                for (int i = 0; i < samples_read * nchans; ++i)
+                    * (float *) (source_buffer + i) = source_buffer [i] / 8388608.0 * gain;
+
+            output_generated = modulateProcess (modulator, (float *) source_buffer, samples_read ? samples_read : -1, dsd_buffer, NULL);
+        }
+        else {
+            if (file_info->mode & MODE_FLOAT)
+                for (int i = 0; i < samples_read * nchans; ++i)
+                    source_buffer [i] = * (float *) (source_buffer + i) * 8388608.0;
+
+            output_generated = decodeProcess (decoder, source_buffer, samples_read ? samples_read : -1, dsd_buffer, buffer_samples);
+        }
+
+        if (output_generated) {
+            for (int i = 0; i < output_generated * nchans; ++i)
+                source_buffer [i] = dsd_buffer [i];
+
+            if (!WavpackPackSamples (outcxt, source_buffer, output_generated)) {
+                strcpy (error, WavpackGetErrorMessage (outcxt));
+                WavpackCloseFile (incxt);
+                WavpackCloseFile (outcxt);
+                fclose (wv_file.file);
+                free (file_info->chan_data);
+                free (file_info);
+                return 1;
+            }
+
+            samples_processed += output_generated;
+        }
+        else if (!samples_read)
+            break;
+
+        if (progress_divider) {
+            int new_percent = samples_processed / progress_divider;
+
+            if (new_percent != percent) {
+                fprintf (stderr, "\rprogress: %d%% ", percent = new_percent);
+                fflush (stderr);
+            }
+        }
+    }
+
+    fprintf (stderr, "\r...completed successfully\n");
+
+    if (!WavpackFlushSamples (outcxt)) {
+        strcpy (error, WavpackGetErrorMessage (outcxt));
+        WavpackCloseFile (incxt);
+        WavpackCloseFile (outcxt);
+        fclose (wv_file.file);
+        free (file_info->chan_data);
+        free (file_info);
+        return 1;
+    }
+
+    if (WavpackGetSampleIndex64 (outcxt) != file_info->total_samples) {
+        strcpy (error, "incorrect number of samples written");
+        WavpackCloseFile (incxt);
+        WavpackCloseFile (outcxt);
+        fclose (wv_file.file);
+        free (file_info->chan_data);
+        free (file_info);
+        return 1;
+    }
+
+    if (WavpackGetNumErrors (incxt))
+        fprintf (stderr, "warning: %d errors detected deuring source decode!\n", WavpackGetNumErrors (incxt));
+
+    WavpackCloseFile (incxt);
+    WavpackCloseFile (outcxt);
+    fclose (wv_file.file);
+
+    if (decoder) {
+        int64_t embedded_samples = decodeTotalEmbeddedSamples (decoder);
+
+        if (embedded_samples == file_info->total_samples * nchans)
+            fprintf (stderr, "all DSD samples were extracted verbatim from DXD-e file\n");
+        else
+            fprintf (stderr, "%.2f%% of DSD samples were extracted verbatim from DXD-e file\n",
+                embedded_samples * 100.0 / (file_info->total_samples * nchans));
+
+        decodeFree (decoder);
+    }
+    else
+        modulateFree (modulator);
+
+    free (file_info->chan_data);
+    free (file_info);
+    free (source_buffer);
+    free (dsd_buffer);
+
     return 0;
 }
