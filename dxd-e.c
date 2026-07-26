@@ -620,12 +620,15 @@ static int write_block (void *id, void *data, int32_t length)
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+static int copy_tag_items (WavpackContext *infile, WavpackContext *outfile);
+
 static int convert_dsd_to_dxd (char *infilename, char *outfilename, char *error)
 {
-    int flags = OPEN_DSD_NATIVE | (4 << OPEN_THREADS_SHFT);
+    int flags = OPEN_DSD_NATIVE | OPEN_TAGS | (4 << OPEN_THREADS_SHFT);
     WavpackContext *incxt = WavpackOpenFileInput (infilename, error, flags, 0), *outcxt;
     WavpackFileInfo *file_info;
     WavpackConfig config = {};
+    unsigned char *chan_ids;
     write_id wv_file = {};
 
     if (!incxt)
@@ -665,8 +668,10 @@ static int convert_dsd_to_dxd (char *infilename, char *outfilename, char *error)
     config.num_channels = file_info->num_channels;
     config.channel_mask = file_info->channel_mask;
     config.worker_threads = 4;
+    chan_ids = malloc (file_info->num_channels + 1);
+    WavpackGetChannelIdentities (incxt, chan_ids);
 
-    if (!WavpackSetConfiguration64 (outcxt, &config, file_info->total_samples, NULL)) {
+    if (!WavpackSetConfiguration64 (outcxt, &config, file_info->total_samples, chan_ids)) {
         strcpy (error, WavpackGetErrorMessage (outcxt));
         fclose (wv_file.file);
         WavpackCloseFile (outcxt);
@@ -674,6 +679,20 @@ static int convert_dsd_to_dxd (char *infilename, char *outfilename, char *error)
         free (file_info);
         return 1;
     }
+
+    free (chan_ids);
+
+    if (file_info->qmode & QMODE_REORDERED_CHANS) {
+        uint32_t layout = WavpackGetChannelLayout (incxt, NULL);
+        unsigned char order [256];
+
+        if (layout & 0xff) {
+            WavpackGetChannelLayout (incxt, order);
+            WavpackSetChannelLayout (outcxt, layout, order);
+        }
+    }
+    else
+        WavpackSetChannelLayout (outcxt, WavpackGetChannelLayout (incxt, NULL), NULL);
 
     WavpackPackInit (outcxt);
 
@@ -692,13 +711,13 @@ static int convert_dsd_to_dxd (char *infilename, char *outfilename, char *error)
     if (embed_dsd) {
         dsd_embedder = embedDSDinit (nchans, embed_pilot ? EMBED_PILOT_SIGNAL : 0);
 
-        fprintf (stderr, "converting \"%s\" file %s to DXD%d-e file \"%s\" (%s)...\n",
-            file_info->format, infilename, file_info->sample_rate / 1000, outfilename,
+        fprintf (stderr, "converting DSD file \"%s\" to DXD%d-e file \"%s\" (%s)...\n",
+            infilename, file_info->sample_rate / 1000, outfilename,
             embed_pilot ? "with embedded DSD and pilot" : "with embedded DSD only");
     }
     else
-        fprintf (stderr, "converting %s file \"%s\" to DXD%d file \"%s\" (no embedded DSD)...\n",
-            file_info->format, infilename, file_info->sample_rate / 1000, outfilename);
+        fprintf (stderr, "converting DSD file \"%s\" to DXD%d file \"%s\" (no embedded DSD)...\n",
+            infilename, file_info->sample_rate / 1000, outfilename);
 
     if (file_info->total_samples > 1000000) {
         progress_divider = (file_info->total_samples + 50) / 100;
@@ -781,6 +800,16 @@ static int convert_dsd_to_dxd (char *infilename, char *outfilename, char *error)
         return 1;
     }
 
+    if (!copy_tag_items (incxt, outcxt)) {
+        strcpy (error, "error copying tags");
+        WavpackCloseFile (incxt);
+        WavpackCloseFile (outcxt);
+        fclose (wv_file.file);
+        free (file_info->chan_data);
+        free (file_info);
+        return 1;
+    }
+
     if (WavpackGetSampleIndex64 (outcxt) != file_info->total_samples) {
         strcpy (error, "incorrect number of samples written");
         WavpackCloseFile (incxt);
@@ -814,10 +843,11 @@ static int convert_dsd_to_dxd (char *infilename, char *outfilename, char *error)
 
 static int convert_dxd_to_dsd (char *infilename, ChannelData *chan_data, char *outfilename, char *error)
 {
-    int flags = (4 << OPEN_THREADS_SHFT), embedded_dsd = 0;
+    int flags = OPEN_WVC | OPEN_TAGS | (4 << OPEN_THREADS_SHFT), embedded_dsd = 0;
     WavpackContext *incxt = WavpackOpenFileInput (infilename, error, flags, 0), *outcxt;
     WavpackFileInfo *file_info;
     WavpackConfig config = {};
+    unsigned char *chan_ids;
     write_id wv_file = {};
 
     if (!incxt)
@@ -896,8 +926,10 @@ static int convert_dxd_to_dsd (char *infilename, ChannelData *chan_data, char *o
     config.num_channels = file_info->num_channels;
     config.channel_mask = file_info->channel_mask;
     config.worker_threads = 4;
+    chan_ids = malloc (file_info->num_channels + 1);
+    WavpackGetChannelIdentities (incxt, chan_ids);
 
-    if (!WavpackSetConfiguration64 (outcxt, &config, file_info->total_samples, NULL)) {
+    if (!WavpackSetConfiguration64 (outcxt, &config, file_info->total_samples, chan_ids)) {
         strcpy (error, WavpackGetErrorMessage (outcxt));
         fclose (wv_file.file);
         WavpackCloseFile (outcxt);
@@ -905,6 +937,20 @@ static int convert_dxd_to_dsd (char *infilename, ChannelData *chan_data, char *o
         free (file_info);
         return 1;
     }
+
+    free (chan_ids);
+
+    if (file_info->qmode & QMODE_REORDERED_CHANS) {
+        uint32_t layout = WavpackGetChannelLayout (incxt, NULL);
+        unsigned char order [256];
+
+        if (layout & 0xff) {
+            WavpackGetChannelLayout (incxt, order);
+            WavpackSetChannelLayout (outcxt, layout, order);
+        }
+    }
+    else
+        WavpackSetChannelLayout (outcxt, WavpackGetChannelLayout (incxt, NULL), NULL);
 
     WavpackPackInit (outcxt);
 
@@ -1008,6 +1054,16 @@ static int convert_dxd_to_dsd (char *infilename, ChannelData *chan_data, char *o
         return 1;
     }
 
+    if (!copy_tag_items (incxt, outcxt)) {
+        strcpy (error, "error copying tags");
+        WavpackCloseFile (incxt);
+        WavpackCloseFile (outcxt);
+        fclose (wv_file.file);
+        free (file_info->chan_data);
+        free (file_info);
+        return 1;
+    }
+
     if (WavpackGetSampleIndex64 (outcxt) != file_info->total_samples) {
         strcpy (error, "incorrect number of samples written");
         WavpackCloseFile (incxt);
@@ -1045,4 +1101,45 @@ static int convert_dxd_to_dsd (char *infilename, ChannelData *chan_data, char *o
     free (dsd_buffer);
 
     return 0;
+}
+
+static int copy_tag_items (WavpackContext *infile, WavpackContext *outfile)
+{
+    int res = 1;
+
+    if (WavpackGetMode (infile) & MODE_VALID_TAG) {
+        int num_binary_items = WavpackGetNumBinaryTagItems (infile);
+        int num_items = WavpackGetNumTagItems (infile), i;
+        int item_len, value_len;
+        char *item, *value;
+
+        for (i = 0; i < num_items && res; ++i) {
+            item_len = WavpackGetTagItemIndexed (infile, i, NULL, 0);
+            item = malloc (item_len + 1);
+            WavpackGetTagItemIndexed (infile, i, item, item_len + 1);
+            value_len = WavpackGetTagItem (infile, item, NULL, 0);
+            value = malloc (value_len + 1);
+            WavpackGetTagItem (infile, item, value, value_len + 1);
+            res = WavpackAppendTagItem (outfile, item, value, value_len);
+            free (value);
+            free (item);
+        }
+
+        for (i = 0; i < num_binary_items && res; ++i) {
+            item_len = WavpackGetBinaryTagItemIndexed (infile, i, NULL, 0);
+            item = malloc (item_len + 1);
+            WavpackGetBinaryTagItemIndexed (infile, i, item, item_len + 1);
+            value_len = WavpackGetBinaryTagItem (infile, item, NULL, 0);
+            value = malloc (value_len);
+            value_len = WavpackGetBinaryTagItem (infile, item, value, value_len);
+            res = WavpackAppendBinaryTagItem (outfile, item, value, value_len);
+            free (value);
+            free (item);
+        }
+
+        if (res)
+           res = WavpackWriteTag (outfile);
+    }
+
+    return res;
 }
