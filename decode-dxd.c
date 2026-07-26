@@ -44,7 +44,7 @@ int main (int argc, char **argv)
         }
     }
 
-    decoder = decodeInit (nchans, level);
+    decoder = decodeInit (nchans, level, MODULATE_MULTITHREADED);
     source_buffer = calloc (sizeof (int32_t), BUFFER_SAMPLES * nchans);
     destin_buffer = calloc (1, BUFFER_SAMPLES * nchans);
 

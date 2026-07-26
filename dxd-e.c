@@ -920,7 +920,7 @@ static int convert_dxd_to_dsd (char *infilename, ChannelData *chan_data, char *o
     Decoder *decoder = NULL;
 
     if (embedded_dsd)
-        decoder = decodeInit (nchans, level);
+        decoder = decodeInit (nchans, level, MODULATE_MULTITHREADED);
     else
         modulator = modulateInit (nchans, level, MODULATE_MULTITHREADED);
 

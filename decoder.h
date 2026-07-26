@@ -48,7 +48,7 @@ typedef struct {
 extern "C" {
 #endif
 
-Decoder *decodeInit (int num_channels, int dsd_encode_level);
+Decoder *decodeInit (int num_channels, int dsd_encode_level, int flags);
 int decodeProcess (Decoder *cxt, const int32_t *source, int in_samples, unsigned char *destin, int out_samples);
 int64_t decodeTotalEmbeddedSamples (Decoder *cxt);
 void decodeFree (Decoder *cxt);

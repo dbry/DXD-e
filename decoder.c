@@ -14,7 +14,7 @@
 
 #define IDLE_LEVEL  0
 
-Decoder *decodeInit (int num_channels, int dsd_encode_level)
+Decoder *decodeInit (int num_channels, int dsd_encode_level, int flags)
 {
     Decoder *decoder = calloc (1, sizeof (Decoder));
 
@@ -22,7 +22,7 @@ Decoder *decodeInit (int num_channels, int dsd_encode_level)
     decoder->level = dsd_encode_level;
     decoder->channels = calloc (num_channels, sizeof (DecoderChannel));
     decoder->decimator = decimateDSDinit (0, 0);
-    decoder->modulator = modulateInit (num_channels, IDLE_LEVEL, MODULATE_MULTITHREADED | MODULATOR_ALIGN_EMBEDDED);
+    decoder->modulator = modulateInit (num_channels, IDLE_LEVEL, flags | MODULATOR_ALIGN_EMBEDDED);
     decoder->pilot_detector = pilotDetectInit (num_channels);
     decoder->float_buffer = calloc (sizeof (float), BUFSAMPLES * num_channels);
     decoder->embedded_buffer = calloc (sizeof (char), BUFSAMPLES * num_channels);
