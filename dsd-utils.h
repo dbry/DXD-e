@@ -39,14 +39,18 @@ static const int32_t decm_filter [] = {
     2337, 1315, 692, 336, 147, 56, 17, 4,
 };
 
-#define NUM_FILTER_TERMS 56
-#define HISTORY_BYTES ((NUM_FILTER_TERMS+7)/8)
-#define DELAY_SAMPLES ((HISTORY_BYTES - 1) / 2)
+#define NUM_FILTER_TERMS    56
+#define HISTORY_BYTES       ((NUM_FILTER_TERMS+7)/8)
+#define DELAY_SAMPLES       ((HISTORY_BYTES - 1) / 2)
+
+#define LAST_SAMPLES        16                      // output samples to keep for final extrapolation
+#define LAST_SAMPLES_MASK   (LAST_SAMPLES - 1)      // (must be power of two for functioning mask)
 
 typedef struct {
     unsigned char delay [HISTORY_BYTES];
+    int32_t last_samples [LAST_SAMPLES];
+    int last_sample_index;
     Biquad lowpass_filter;
-    int32_t last_sample;
 } DecimateDSDchannel;
 
 typedef struct {
