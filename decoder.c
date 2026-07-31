@@ -22,13 +22,15 @@ Decoder *decodeInit (int num_channels, int dsd_encode_level, int flags)
     decoder->level = dsd_encode_level;
     decoder->channels = calloc (num_channels, sizeof (DecoderChannel));
     decoder->decimator = decimateDSDinit (0, 0);
-    decoder->modulator = modulateInit (num_channels, IDLE_LEVEL, flags | MODULATOR_ALIGN_EMBEDDED);
-    decoder->pilot_detector = pilotDetectInit (num_channels);
+    decoder->modulator = modulateInit (num_channels, IDLE_LEVEL, (flags & MODULATOR_SHARED_FLAGS) | MODULATOR_ALIGN_EMBEDDED);
     decoder->float_buffer = calloc (sizeof (float), BUFSAMPLES * num_channels);
     decoder->embedded_buffer = calloc (sizeof (char), BUFSAMPLES * num_channels);
     decoder->modulated_buffer = calloc (sizeof (char), BUFSAMPLES * num_channels);
     decoder->composite_buffer = calloc (sizeof (char), BUFSAMPLES * num_channels);
     decoder->source_buffer = calloc (sizeof (int32_t), NUM_BUFFERS * BUFSAMPLES * num_channels);
+
+    if (!(flags & DECODER_EXTRACT_ALWAYS))
+        decoder->pilot_detector = pilotDetectInit (num_channels);
 
     return decoder;
 }
@@ -91,7 +93,10 @@ int decodeProcess (Decoder *cxt, const int32_t *source, int in_samples, unsigned
                                 if (cxt->source_samples < BUFSAMPLES * (b + 1))
                                     scan_samples = cxt->source_samples - BUFSAMPLES * b;
 
-                                chan->dsd_pilot_valid [b] = pilotDetectChannelRun (cxt->pilot_detector, cxt->source_buffer + BUFSAMPLES * b * cxt->nchans, c, scan_samples);
+                                if (cxt->pilot_detector)
+                                    chan->dsd_pilot_valid [b] = pilotDetectChannelRun (cxt->pilot_detector, cxt->source_buffer + BUFSAMPLES * b * cxt->nchans, c, scan_samples);
+                                else
+                                    chan->dsd_pilot_valid [b] = 1;
 
                                 if (!chan->dsd_pilot_valid [b])
                                     chan->next_state = chan->state = Generating;
@@ -109,7 +114,10 @@ int decodeProcess (Decoder *cxt, const int32_t *source, int in_samples, unsigned
 
                     case Generating:
                         if (samples_read) {
-                            chan->dsd_pilot_valid [2] = pilotDetectChannelRun (cxt->pilot_detector, cxt->source_buffer + BUFSAMPLES * 2 * cxt->nchans, c, samples_read);
+                                if (cxt->pilot_detector)
+                                    chan->dsd_pilot_valid [2] = pilotDetectChannelRun (cxt->pilot_detector, cxt->source_buffer + BUFSAMPLES * 2 * cxt->nchans, c, samples_read);
+                                else
+                                    chan->dsd_pilot_valid [2] = 1;
 
                             if (chan->dsd_pilot_valid [0] && chan->dsd_pilot_valid [1] && chan->dsd_pilot_valid [2]) {
                                 modulateSetAlignment (cxt->modulator, c, 1);
@@ -121,7 +129,10 @@ int decodeProcess (Decoder *cxt, const int32_t *source, int in_samples, unsigned
 
                     case Syncing:
                         if (samples_read) {
-                            chan->dsd_pilot_valid [2] = pilotDetectChannelRun (cxt->pilot_detector, cxt->source_buffer + BUFSAMPLES * 2 * cxt->nchans, c, samples_read);
+                                if (cxt->pilot_detector)
+                                    chan->dsd_pilot_valid [2] = pilotDetectChannelRun (cxt->pilot_detector, cxt->source_buffer + BUFSAMPLES * 2 * cxt->nchans, c, samples_read);
+                                else
+                                    chan->dsd_pilot_valid [2] = 1;
 
                             if (chan->dsd_pilot_valid [2])
                                 chan->next_state = Embedding;
@@ -135,7 +146,10 @@ int decodeProcess (Decoder *cxt, const int32_t *source, int in_samples, unsigned
 
                     case Embedding:
                         if (samples_read) {
-                            chan->dsd_pilot_valid [2] = pilotDetectChannelRun (cxt->pilot_detector, cxt->source_buffer + BUFSAMPLES * 2 * cxt->nchans, c, samples_read);
+                            if (cxt->pilot_detector)
+                                chan->dsd_pilot_valid [2] = pilotDetectChannelRun (cxt->pilot_detector, cxt->source_buffer + BUFSAMPLES * 2 * cxt->nchans, c, samples_read);
+                            else
+                                chan->dsd_pilot_valid [2] = 1;
 
                             if (!chan->dsd_pilot_valid [1])
                                 chan->next_state = Generating;
@@ -256,7 +270,10 @@ void decodeFree (Decoder *cxt)
     free (cxt->composite_buffer);
     modulateFree (cxt->modulator);
     decimateDSDdestroy (cxt->decimator);
-    pilotDetectDestroy (cxt->pilot_detector);
+
+    if (cxt->pilot_detector)
+        pilotDetectDestroy (cxt->pilot_detector);
+
     free (cxt->channels);
     free (cxt);
 }

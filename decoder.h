@@ -20,6 +20,9 @@
 #include "modulator.h"
 #include "dsd-utils.h"
 
+#define MODULATOR_SHARED_FLAGS  MODULATE_MULTITHREADED
+#define DECODER_EXTRACT_ALWAYS  0x2
+
 typedef enum { Init, Embedding, Generating, Syncing } DecoderState;
 
 #define NUM_BUFFERS 3
