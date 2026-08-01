@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <math.h>
 
-#include "wavpack.h"
+#include <wavpack/wavpack.h>
 
 #include "dsd-utils.h"
 #include "modulator.h"
@@ -38,32 +38,36 @@ static WavpackFileInfo *analyze_file (char *filename, char *error);
 #define VERSION         0.1
 
 static const char *sign_on = "\n"
-" DXD-E WavPack DSD / DXD / DXD-e Conversion Utility\n"
-"          Copyright (c) %d David Bryant\n"
-"                  Version %.1f\n\n";
+" DXD-E: WavPack DSD / DXD / DXD-e Conversion Utility\n"
+" Copyright (c) %d David Bryant\n"
+" Version %.1f\n\n";
 
 static const char *usage =
 " Usage:     DXD-E [-options] infile.wv [outfile.wv]\n\n"
-"            - input WavPack file is analyzed and summary is displayed\n"
-"            - if output file specified then conversion is performed\n"
-"              - DSD is converted to DXD-e unless overridden\n"
+"            * input WavPack file is analyzed and summary is displayed\n"
+"            * if output file specified then conversion is performed:\n"
+"              - DSD is converted to DXD-e (override with --no-embed)\n"
 "              - DXD or DXD-e is converted back to DSD\n\n"
 " Options:  -1|2|3|4|5      = DSD encoding quality level, default = 3\n"
+"                             1-3 are real-time capable but lower quality\n"
+"                             4-5 are higher quality but can be very slow\n"
+"           -h or --help    = display this usage guide\n"
 "           --no-embed      = do not embed DSD in DXD file and do\n"
 "                             not extract DSD even if pilot detected\n"
 "           --no-pilot      = do not add pilot signal to DXD-e file and\n"
 "                             extract DSD even if no pilot detected\n"
 "           --no-random     = do not force the pilot signal to start at\n"
 "                             a random point in its cycle (testing only)\n"
+"           -q or --quiet   = skip progress display and detailed file info\n"
 "           -y              = overwrite outfile if it exists\n\n"
 " Web:       Visit www.github.com/dbry/dxd-e for latest version and info\n\n";
 
-static int embed_dsd = 1, embed_pilot = 1, random_pilot = 1, extract_dsd = 1, detect_pilot = 1, level = 3;
+static int embed_dsd = 1, embed_pilot = 1, random_pilot = 1, extract_dsd = 1, detect_pilot = 1, level = 3, quiet = 0;
 
 int main (int argc, char **argv)
 {
     char *infilename = NULL, *outfilename = NULL, error [80];
-    int overwrite = 0, res = 0;
+    int overwrite = 0, help = 0, res = 0;
     WavpackFileInfo *info;
 
     // loop through command-line arguments
@@ -82,6 +86,10 @@ int main (int argc, char **argv)
                 detect_pilot = embed_pilot = 0;
             else if (!strcmp (long_option, "no-random"))                    // --no-random
                 random_pilot = 0;
+            else if (!strcmp (long_option, "help"))                         // --help
+                help = 1;
+            else if (!strcmp (long_option, "quiet"))                        // --quiet
+                quiet = 0;
             else {
                 fprintf (stderr, "unknown option: %s !\n", long_option);
                 return 1;
@@ -97,6 +105,14 @@ int main (int argc, char **argv)
 
                     case '1': case '2': case '3': case '4': case '5':
                         level = **argv - '0';
+                        break;
+
+                    case 'H': case 'h':
+                        help = 1;
+                        break;
+
+                    case 'Q': case 'q':
+                        quiet = 1;
                         break;
 
                     case 'Y': case 'y':
@@ -121,9 +137,10 @@ int main (int argc, char **argv)
         }
     }
 
-    printf (sign_on, YEAR, VERSION);
+    if (!quiet)
+        fprintf (stderr, sign_on, YEAR, VERSION);
 
-    if (!infilename) {
+    if (!infilename || help) {
         printf ("%s", usage);
         return 1;
     }
@@ -144,7 +161,8 @@ int main (int argc, char **argv)
         return 1;
     }
 
-    display_file_info (stdout, info);
+    if (!quiet)
+        display_file_info (stdout, info);
 
     if (outfilename) {
         if (info->dsd) {
@@ -164,7 +182,18 @@ int main (int argc, char **argv)
             res = 1;
         }
     }
+    else if (info->dsd) {
+        if (info->dsd == -1)
+            printf ("file \"%s\" is %s but cannot be converted because it's not a supported DXD rate\n", infilename, info->format);
+        else
+            printf ("file \"%s\" is %s and can be converted to DXD or DXD-e by specifying an output file\n", infilename, info->format);
+    }
+    else if (info->dxd)
+        printf ("file \"%s\" is %s and can be converted to DSD by specifying an output file\n", infilename, info->format);
+    else
+        printf ("file \"%s\" is %s and cannot be converted\n", infilename, info->format);
 
+    printf ("\n");
     free (info->chan_data);
     free (info);
     return res;
@@ -187,7 +216,7 @@ static WavpackFileInfo *analyze_file (char *filename, char *error)
     if (!cxt)
         return NULL;
 
-    fprintf (stderr, "analyzing file \"%s\"...\n", filename);
+    printf ("analyzing file \"%s\"...\n", filename);
 
     file_info = calloc (1, sizeof (WavpackFileInfo));
     file_info->total_samples = WavpackGetNumSamples64 (cxt);
@@ -241,7 +270,7 @@ static WavpackFileInfo *analyze_file (char *filename, char *error)
     if (file_info->dxd)
         detector = pilotDetectInit (file_info->num_channels);
 
-    if (file_info->total_samples > 1000000) {
+    if (!quiet && file_info->total_samples > 1000000) {
         progress_divider = (file_info->total_samples + 50) / 100;
         fprintf (stderr, "\rprogress: %d%% ", percent = 0); fflush (stderr);
     }
@@ -333,7 +362,11 @@ static WavpackFileInfo *analyze_file (char *filename, char *error)
     if (embedded_dsd)
         strcat (file_info->format, "-e");
 
-    fprintf (stderr, "\r...completed successfully\n");
+    if (quiet)
+        printf ("...completed successfully\n");
+    else
+        fprintf (stderr, "\r...completed successfully\n");
+
     file_info->errors = WavpackGetNumErrors (cxt);
 
     WavpackCloseFile (cxt);
@@ -646,9 +679,48 @@ static int write_block (void *id, void *data, int32_t length)
     return 1;
 }
 
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+static int copy_tag_items (WavpackContext *infile, WavpackContext *outfile)
+{
+    int res = 1;
 
-static int copy_tag_items (WavpackContext *infile, WavpackContext *outfile);
+    if (WavpackGetMode (infile) & MODE_VALID_TAG) {
+        int num_binary_items = WavpackGetNumBinaryTagItems (infile);
+        int num_items = WavpackGetNumTagItems (infile), i;
+        int item_len, value_len;
+        char *item, *value;
+
+        for (i = 0; i < num_items && res; ++i) {
+            item_len = WavpackGetTagItemIndexed (infile, i, NULL, 0);
+            item = malloc (item_len + 1);
+            WavpackGetTagItemIndexed (infile, i, item, item_len + 1);
+            value_len = WavpackGetTagItem (infile, item, NULL, 0);
+            value = malloc (value_len + 1);
+            WavpackGetTagItem (infile, item, value, value_len + 1);
+            res = WavpackAppendTagItem (outfile, item, value, value_len);
+            free (value);
+            free (item);
+        }
+
+        for (i = 0; i < num_binary_items && res; ++i) {
+            item_len = WavpackGetBinaryTagItemIndexed (infile, i, NULL, 0);
+            item = malloc (item_len + 1);
+            WavpackGetBinaryTagItemIndexed (infile, i, item, item_len + 1);
+            value_len = WavpackGetBinaryTagItem (infile, item, NULL, 0);
+            value = malloc (value_len);
+            value_len = WavpackGetBinaryTagItem (infile, item, value, value_len);
+            res = WavpackAppendBinaryTagItem (outfile, item, value, value_len);
+            free (value);
+            free (item);
+        }
+
+        if (res)
+           res = WavpackWriteTag (outfile);
+    }
+
+    return res;
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 static int convert_dsd_to_dxd (char *infilename, char *outfilename, char *error)
 {
@@ -755,15 +827,15 @@ static int convert_dsd_to_dxd (char *infilename, char *outfilename, char *error)
 
         dsd_embedder = embedDSDinit (nchans, flags);
 
-        fprintf (stderr, "converting %s file \"%s\" to DXD%d-e file \"%s\" (%s)...\n",
+        printf ("converting %s file \"%s\" to DXD%d-e file \"%s\" (%s)...\n",
             file_info->format, infilename, file_info->sample_rate / 1000, outfilename,
             embed_pilot ? "with embedded DSD and pilot" : "with embedded DSD only");
     }
     else
-        fprintf (stderr, "converting %s file \"%s\" to DXD%d file \"%s\" (no embedded DSD)...\n",
+        printf ("converting %s file \"%s\" to DXD%d file \"%s\" (no embedded DSD)...\n",
             file_info->format, infilename, file_info->sample_rate / 1000, outfilename);
 
-    if (file_info->total_samples > 1000000) {
+    if (!quiet && file_info->total_samples > 1000000) {
         progress_divider = (file_info->total_samples + 50) / 100;
         fprintf (stderr, "\rprogress: %d%% ", percent = 0); fflush (stderr);
     }
@@ -832,7 +904,10 @@ static int convert_dsd_to_dxd (char *infilename, char *outfilename, char *error)
         }
     }
 
-    fprintf (stderr, "\r...completed successfully\n");
+    if (quiet)
+        printf ("...completed successfully\n");
+    else
+        fprintf (stderr, "\r...completed successfully\n");
 
     if (!WavpackFlushSamples (outcxt)) {
         strcpy (error, WavpackGetErrorMessage (outcxt));
@@ -1016,10 +1091,11 @@ static int convert_dxd_to_dsd (char *infilename, ChannelData *chan_data, char *o
     else
         modulator = modulateInit (nchans, level, MODULATE_MULTITHREADED);
 
-    fprintf (stderr, "converting DXD%d%s file \"%s\" to DSD file \"%s\"...\n",
-        file_info->sample_rate / 1000, embedded_dsd ? "-e" : "", infilename, outfilename);
+    printf ("converting DXD%d%s file \"%s\" to DSD%d file \"%s\" at level %d...\n",
+        file_info->sample_rate / 1000, embedded_dsd ? "-e" : "", infilename,
+        file_info->sample_rate * 8 / (file_info->sample_rate % 44100 ? 48000 : 44100), outfilename, level);
 
-    if (file_info->total_samples > 1000000) {
+    if (!quiet && file_info->total_samples > 1000000) {
         progress_divider = (file_info->total_samples + 50) / 100;
         fprintf (stderr, "\rprogress: %d%% ", percent = 0); fflush (stderr);
     }
@@ -1088,7 +1164,10 @@ static int convert_dxd_to_dsd (char *infilename, ChannelData *chan_data, char *o
         }
     }
 
-    fprintf (stderr, "\r...completed successfully\n");
+    if (quiet)
+        printf ("...completed successfully\n");
+    else
+        fprintf (stderr, "\r...completed successfully\n");
 
     if (!WavpackFlushSamples (outcxt)) {
         strcpy (error, WavpackGetErrorMessage (outcxt));
@@ -1121,7 +1200,7 @@ static int convert_dxd_to_dsd (char *infilename, ChannelData *chan_data, char *o
     }
 
     if (WavpackGetNumErrors (incxt))
-        fprintf (stderr, "warning: %d errors detected deuring source decode!\n", WavpackGetNumErrors (incxt));
+        fprintf (stderr, "warning: %d errors detected during source decode!\n", WavpackGetNumErrors (incxt));
 
     WavpackCloseFile (incxt);
     WavpackCloseFile (outcxt);
@@ -1131,9 +1210,9 @@ static int convert_dxd_to_dsd (char *infilename, ChannelData *chan_data, char *o
         int64_t embedded_samples = decodeTotalEmbeddedSamples (decoder);
 
         if (embedded_samples == file_info->total_samples * nchans)
-            fprintf (stderr, "all DSD samples were extracted verbatim from DXD-e file\n");
+            printf ("all DSD samples were extracted verbatim from DXD-e file\n");
         else
-            fprintf (stderr, "%.2f%% of DSD samples were extracted verbatim from DXD-e file\n",
+            printf ("%.2f%% of DSD samples were extracted verbatim from DXD-e file\n",
                 embedded_samples * 100.0 / (file_info->total_samples * nchans));
 
         decodeFree (decoder);
@@ -1147,45 +1226,4 @@ static int convert_dxd_to_dsd (char *infilename, ChannelData *chan_data, char *o
     free (dsd_buffer);
 
     return 0;
-}
-
-static int copy_tag_items (WavpackContext *infile, WavpackContext *outfile)
-{
-    int res = 1;
-
-    if (WavpackGetMode (infile) & MODE_VALID_TAG) {
-        int num_binary_items = WavpackGetNumBinaryTagItems (infile);
-        int num_items = WavpackGetNumTagItems (infile), i;
-        int item_len, value_len;
-        char *item, *value;
-
-        for (i = 0; i < num_items && res; ++i) {
-            item_len = WavpackGetTagItemIndexed (infile, i, NULL, 0);
-            item = malloc (item_len + 1);
-            WavpackGetTagItemIndexed (infile, i, item, item_len + 1);
-            value_len = WavpackGetTagItem (infile, item, NULL, 0);
-            value = malloc (value_len + 1);
-            WavpackGetTagItem (infile, item, value, value_len + 1);
-            res = WavpackAppendTagItem (outfile, item, value, value_len);
-            free (value);
-            free (item);
-        }
-
-        for (i = 0; i < num_binary_items && res; ++i) {
-            item_len = WavpackGetBinaryTagItemIndexed (infile, i, NULL, 0);
-            item = malloc (item_len + 1);
-            WavpackGetBinaryTagItemIndexed (infile, i, item, item_len + 1);
-            value_len = WavpackGetBinaryTagItem (infile, item, NULL, 0);
-            value = malloc (value_len);
-            value_len = WavpackGetBinaryTagItem (infile, item, value, value_len);
-            res = WavpackAppendBinaryTagItem (outfile, item, value, value_len);
-            free (value);
-            free (item);
-        }
-
-        if (res)
-           res = WavpackWriteTag (outfile);
-    }
-
-    return res;
 }
