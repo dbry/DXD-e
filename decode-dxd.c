@@ -73,8 +73,8 @@ int main (int argc, char **argv)
 
     }
 
-    fprintf (stderr, "%ld total PCM samples, %ld total DSD samples, %ld were embedded (all chans, %.1f%%)\n",
-        total_pcm_samples, total_dsd_samples, decodeTotalEmbeddedSamples (decoder),
+    fprintf (stderr, "%lld total PCM samples, %lld total DSD samples, %lld were embedded (all chans, %.1f%%)\n",
+        (long long) total_pcm_samples, (long long) total_dsd_samples, (long long) decodeTotalEmbeddedSamples (decoder),
         decodeTotalEmbeddedSamples (decoder) * 100.0 / total_dsd_samples / nchans);
 
     transitionDSDdumpstats (stderr);

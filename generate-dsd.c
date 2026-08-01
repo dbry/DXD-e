@@ -126,7 +126,7 @@ int main (int argc, char **argv)
             break;
     }
 
-    fprintf (stderr, "total samples: %ld read, %ld written\n", total_input_samples, total_output_samples);
+    fprintf (stderr, "total samples: %lld read, %lld written\n", (long long) total_input_samples, (long long) total_output_samples);
     transitionDSDdumpstats (stderr);
     decimateDSDdestroy (decimator);
     modulateFree (modulator);

@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <math.h>
 
-#include <wavpack/wavpack.h>
+#include "wavpack.h"
 
 #include "dsd-utils.h"
 #include "modulator.h"
@@ -48,15 +48,17 @@ static const char *usage =
 "            - if output file specified then conversion is performed\n"
 "              - DSD is converted to DXD-e unless overridden\n"
 "              - DXD or DXD-e is converted back to DSD\n\n"
-" Options:  -1|2|3|4|5      = DSD encoding quality level, default = 5\n"
+" Options:  -1|2|3|4|5      = DSD encoding quality level, default = 3\n"
 "           --no-embed      = do not embed DSD in DXD file and do\n"
 "                             not extract DSD even if pilot detected\n"
 "           --no-pilot      = do not add pilot signal to DXD-e file and\n"
 "                             extract DSD even if no pilot detected\n"
+"           --no-random     = do not force the pilot signal to start at\n"
+"                             a random point in its cycle (testing only)\n"
 "           -y              = overwrite outfile if it exists\n\n"
 " Web:       Visit www.github.com/dbry/dxd-e for latest version and info\n\n";
 
-static int embed_dsd = 1, embed_pilot = 1, extract_dsd = 1, detect_pilot = 1, level = 3;
+static int embed_dsd = 1, embed_pilot = 1, random_pilot = 1, extract_dsd = 1, detect_pilot = 1, level = 3;
 
 int main (int argc, char **argv)
 {
@@ -78,6 +80,8 @@ int main (int argc, char **argv)
                 extract_dsd = embed_dsd = 0;
             else if (!strcmp (long_option, "no-pilot"))                     // --no-pilot
                 detect_pilot = embed_pilot = 0;
+            else if (!strcmp (long_option, "no-random"))                    // --no-random
+                random_pilot = 0;
             else {
                 fprintf (stderr, "unknown option: %s !\n", long_option);
                 return 1;
@@ -744,7 +748,12 @@ static int convert_dsd_to_dxd (char *infilename, char *outfilename, char *error)
     int dsd_samples = 0;
 
     if (embed_dsd) {
-        dsd_embedder = embedDSDinit (nchans, embed_pilot ? EMBED_PILOT_SIGNAL : 0);
+        int flags = embed_pilot ? EMBED_PILOT_SIGNAL : 0;
+
+        if (embed_pilot && random_pilot)
+            flags |= EMBED_PILOT_UNIQUE;
+
+        dsd_embedder = embedDSDinit (nchans, flags);
 
         fprintf (stderr, "converting %s file \"%s\" to DXD%d-e file \"%s\" (%s)...\n",
             file_info->format, infilename, file_info->sample_rate / 1000, outfilename,

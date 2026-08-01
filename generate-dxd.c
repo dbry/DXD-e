@@ -3,7 +3,6 @@
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
-#include <sys/random.h>
 
 #include "dsd-utils.h"
 
@@ -113,10 +112,11 @@ int main (int argc, char **argv)
     }
 
     if (dsd_embedder)
-        fprintf (stderr, "%ld total DSD samples, %ld total PCM samples with embedded %s\n",
-            total_dsd_samples, total_pcm_samples, (flags & EMBED_PILOT_SIGNAL) ? "DSD and pilot signal" : "raw DSD only");
+        fprintf (stderr, "%lld total DSD samples, %lld total PCM samples with embedded %s\n",
+            (long long) total_dsd_samples, (long long) total_pcm_samples, (flags & EMBED_PILOT_SIGNAL) ? "DSD and pilot signal" : "raw DSD only");
     else
-        fprintf (stderr, "%ld total DSD samples, %ld total PCM samples (without embedded DSD)\n", total_dsd_samples, total_pcm_samples);
+        fprintf (stderr, "%lld total DSD samples, %lld total PCM samples (without embedded DSD)\n",
+            (long long) total_dsd_samples, (long long) total_pcm_samples);
 
     if (dsd_embedder)
         embedDSDdestroy (dsd_embedder);

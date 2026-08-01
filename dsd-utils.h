@@ -16,8 +16,8 @@
 #include <string.h>
 #include <stdio.h>
 #include <float.h>
+#include <time.h>
 #include <math.h>
-#include <sys/random.h>
 
 #include "biquad.h"
 

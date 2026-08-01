@@ -2,7 +2,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
-#include <sys/random.h>
+#include <time.h>
 
 int main (int argc, char **argv)
 {
@@ -49,8 +49,12 @@ int main (int argc, char **argv)
     int *corrupt_flag = calloc (nchans, sizeof (int));
     int done = 0;
 
-    if (random && getrandom (&seed, sizeof (seed), 0) != sizeof (seed))
-        fprintf (stderr, "corrupt-dxd: getrandom() not working!\n");
+    if (random) {
+        seed = time (NULL);
+
+        for (int i = 0; i < 10; ++i)
+            seed = ((seed << 4) - seed) ^ 1;
+    }
 
     while (!done) {
         for (int c = 0; c < nchans; ++c) {

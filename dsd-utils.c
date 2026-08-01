@@ -265,6 +265,12 @@ EmbedDSD *embedDSDinit (int nchans, int flags)
     context->noise_feedback = calloc (nchans, sizeof (float));
     context->noise_shapers = calloc (nchans, sizeof (Biquad));
 
+    if (flags & EMBED_PILOT_UNIQUE) {
+        seed = time (NULL);
+        for (int i = 0; i < 10; ++i)
+            seed = ((seed << 4) - seed) ^ 1;
+    }
+
 // TRANSFER FUNCTION:
 // nominator:
 //      +1.0 * z^{0}
@@ -286,8 +292,8 @@ EmbedDSD *embedDSDinit (int nchans, int flags)
 
         if (flags & EMBED_PILOT_SIGNAL) {
             if (flags & EMBED_PILOT_UNIQUE) {
-                if (getrandom (context->parity_shifters + i, 4, 0) != 4)
-                    fprintf (stderr, "generate-dxd: getrandom() not working!\n");
+                context->parity_shifters [i] = seed;
+                seed = ((seed << 4) - seed) ^ 1;
             }
             else {
                 context->parity_shifters [i] = seed;
