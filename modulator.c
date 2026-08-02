@@ -409,6 +409,7 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
                     break;
 
                 default:
+                    ;
             }
 
 #ifdef TEST_RESYNCING
@@ -507,7 +508,7 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
 #endif
 
                 if ((cxt->flags & MODULATOR_ALIGN_EMBEDDED) && (!cxt->delayed_alignment || !cxt->delayed_alignment--)) {
-                    int32_t calculated_sum = 0, embedded_sum = 0, average_sum, closest_average;
+                    int32_t calculated_sum = 0, embedded_sum = 0, average_sum = 0, closest_average = 0;
                     unsigned char dsd_merged_buffer [DSD_DELAY];
                     int transition_byte = (DSD_DELAY - 1) / 2;
 

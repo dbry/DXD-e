@@ -7,16 +7,16 @@ utils := dxd-e generate-dsd generate-dxd extract-dsd corrupt-dxd decode-dxd
 all: $(utils)
 
 dxd-e: dxd-e.c dsd-utils.c dsd-utils.h modulator.c modulator.h decoder.c decoder.h biquad.c biquad.h Makefile
-	$(CC) -Wall -Ofast dxd-e.c dsd-utils.c modulator.c decoder.c biquad.c workers.c -lm -lwavpack -o dxd-e
+	$(CC) -Wall -Ofast dxd-e.c dsd-utils.c modulator.c decoder.c biquad.c workers.c -pthread -lm -lwavpack -o dxd-e
 
 generate-dsd: generate-dsd.c modulator.c modulator.h dsd-utils.c dsd-utils.h Makefile
-	$(CC) -Wall -Ofast generate-dsd.c modulator.c dsd-utils.c biquad.c workers.c -lm -o generate-dsd
+	$(CC) -Wall -Ofast generate-dsd.c modulator.c dsd-utils.c biquad.c workers.c -pthread -lm -o generate-dsd
 
 generate-dxd: generate-dxd.c dsd-utils.c dsd-utils.h biquad.c biquad.h Makefile
 	$(CC) -Wall -O2 generate-dxd.c dsd-utils.c biquad.c -lm -o generate-dxd
 
 decode-dxd: decode-dxd.c decoder.c decoder.h modulator.c modulator.h dsd-utils.c dsd-utils.h Makefile
-	$(CC) -Wall -Ofast decode-dxd.c decoder.c modulator.c dsd-utils.c biquad.c workers.c -lm -o decode-dxd
+	$(CC) -Wall -Ofast decode-dxd.c decoder.c modulator.c dsd-utils.c biquad.c workers.c -pthread -lm -o decode-dxd
 
 extract-dsd: extract-dsd.c dsd-utils.c dsd-utils.h Makefile
 	$(CC) -Wall -O2 extract-dsd.c dsd-utils.c biquad.c -lm -o extract-dsd
