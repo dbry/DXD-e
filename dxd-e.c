@@ -211,8 +211,11 @@ int main (int argc, char **argv)
         printf ("file \"%s\" is %s and cannot be converted\n", infilename, info->format);
 
     printf ("\n");
+    free (infilename);
+    free (outfilename);
     free (info->chan_data);
     free (info);
+
     return res;
 }
 
