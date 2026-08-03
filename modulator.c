@@ -290,7 +290,7 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
         // do the actual SDM here, assuming we have sufficient samples for lookahead depth (and we're not idle)
         while (cxt->upsample_buffer_fill - cxt->upsample_buffer_conv > MAX_DEPTH) if (cxt->level) {
             float *sample_ptr = cxt->upsample_buffer + cxt->upsample_buffer_conv, sample_max = 0.0, order = 2.0;
-            unsigned char *dsd_ptr = cxt->dsd_buffer + cxt->upsample_buffer_conv++;
+            unsigned char *dsd_ptr = cxt->dsd_buffer + cxt->upsample_buffer_conv;
             static int max_depth_per_level [] = { 0, 2, 6, 9, 15, 19 };
             int max_depth = max_depth_per_level [cxt->level];
             int depth = 2;
@@ -472,6 +472,7 @@ static int modulateProcessChannelJob (void *ptr, void *sync_not_used)
             *dsd_ptr |= ((cxt->last_sample > 0.0) & 1) << 1;           // b.1 of dsd_buffer is calculated DSD sample
 #endif
 
+            cxt->upsample_buffer_conv++;
             cxt->total_samples++;
         }
         else {
