@@ -103,20 +103,20 @@ streams are all provided here as examples. Better implementations of all these a
 be better suited for specific applications. The only aspect that **is** required to be compatible with the
 official DXD-e format is the location of the DSD data (the lower 8 bits of each DXD sample) and the digital
 pilot signal (which is a parity bit just above the DSD data (i.e., b.8) that follows a unique 64-bit pattern
-using feedback through a shift-register). Also, it is important that the embedded DSD is aligned such that
+using feedback through a shift-register. Also, it is important that the embedded DSD is aligned such that
 the DXD PCM sample corresponds temporally to the middle of the DSD "byte" that it contains (i.e., halfway
 between b.3 and b.4).
 
 - The digital pilot signal is 64-bits long, so would essentially never be triggered inadvertently. The feedback
-shift-register provides a repeat period of about 2^37 samples, which is over 13 hours of DSD64, and every channel
-of DSD to DXD-e conversions are always started at random posiitons in that space, so it is essentially impossible
-for a collision to occur when editing.
+shift-register provides a repeat period of about 2^37 samples, which is over 13 hours of DSD64, and each channel
+of DSD to DXD-e conversion is always started at a random position in that space, so it is impossible for a
+collision to occur when cutting and combining clips from various sources.
 
 - The pilot signal is based on the parity of each full 24-bit sample. Virtually all audio transformations would
 corrupt that property randomly from sample to sample and destroy the pilot. However the _complement_ operation does
 _not_ affect parity, so a long stretch of complemented samples would appear as unmodified DSD. However,
 interestingly, that complement operation would also toggle all the DSD bits, which would have the same negating
-affect on the audio signal, so it's not an error condition at all! Conversely, actual _negate_ operations do not
+affect on the audio signal, so it's not an error condition at all! Conversely, actual _negate_ operations do _not_
 preserve parity and so present no issue.
 
 - DSD audio is very sensitive to high sample magnitudes, and the SACD disc spec recommends the level be generally
