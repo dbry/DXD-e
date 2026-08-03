@@ -52,17 +52,20 @@ static const char *usage =
 "                             1-3 are real-time capable but lower quality\n"
 "                             4-5 are higher quality but can be very slow\n"
 "           -h or --help    = display this usage guide\n"
-"           --no-embed      = do not embed DSD in DXD file and do\n"
-"                             not extract DSD even if pilot detected\n"
+"           --keep-gain     = do not reduce gain to recommended levels when\n"
+"                             generating new DSD audio (applies only to\n"
+"                             conversions without DSD extraction)\n"
+"           --no-embed      = do not embed DSD or pilot in DXD file and\n"
+"                             never extract DSD even if pilot detected\n"
 "           --no-pilot      = do not add pilot signal to DXD-e file and\n"
-"                             extract DSD even if no pilot detected\n"
+"                             always extract DSD even if no pilot detected\n"
 "           --no-random     = do not force the pilot signal to start at\n"
 "                             a random point in its cycle (testing only)\n"
 "           -q or --quiet   = skip progress display and detailed file info\n"
 "           -y              = overwrite outfile if it exists\n\n"
 " Web:       Visit www.github.com/dbry/dxd-e for latest version and info\n\n";
 
-static int embed_dsd = 1, embed_pilot = 1, random_pilot = 1, extract_dsd = 1, detect_pilot = 1, level = 3, quiet = 0;
+static int embed_dsd = 1, embed_pilot = 1, random_pilot = 1, never_extract = 0, always_extract = 0, keep_gain = 0, level = 3, quiet = 0;
 
 int main (int argc, char **argv)
 {
@@ -80,10 +83,16 @@ int main (int argc, char **argv)
                 if (*long_param++ == '=')
                     break;
 
-            if (!strcmp (long_option, "no-embed"))                          // --no-embed
-                extract_dsd = embed_dsd = 0;
-            else if (!strcmp (long_option, "no-pilot"))                     // --no-pilot
-                detect_pilot = embed_pilot = 0;
+            if (!strcmp (long_option, "keep-gain"))                         // --keep-gain
+                keep_gain = 1;
+            else if (!strcmp (long_option, "no-embed")) {                   // --no-embed
+                never_extract = 1;
+                embed_dsd = 0;
+            }
+            else if (!strcmp (long_option, "no-pilot")) {                   // --no-pilot
+                always_extract = 1;
+                embed_pilot = 0;
+            }
             else if (!strcmp (long_option, "no-random"))                    // --no-random
                 random_pilot = 0;
             else if (!strcmp (long_option, "help"))                         // --help
@@ -137,6 +146,12 @@ int main (int argc, char **argv)
         }
     }
 
+    if (always_extract && never_extract) {
+        fprintf (stderr, "\n--no-embed and --no_pilot options are mutually exclusive !\n");
+        return 1;
+    }
+
+
     if (!quiet)
         fprintf (stderr, sign_on, YEAR, VERSION);
 
@@ -186,10 +201,12 @@ int main (int argc, char **argv)
         if (info->dsd == -1)
             printf ("file \"%s\" is %s but cannot be converted because it's not a supported DXD rate\n", infilename, info->format);
         else
-            printf ("file \"%s\" is %s and can be converted to DXD or DXD-e by specifying an output file\n", infilename, info->format);
+            printf ("file \"%s\" is %s and can be converted to DXD%d or DXD%d-e by specifying an output file\n", infilename, info->format,
+                info->sample_rate / 1000, info->sample_rate / 1000);
     }
     else if (info->dxd)
-        printf ("file \"%s\" is %s and can be converted to DSD by specifying an output file\n", infilename, info->format);
+        printf ("file \"%s\" is %s and can be converted to DSD%d by specifying an output file\n", infilename, info->format,
+            info->sample_rate * 8 / (info->sample_rate % 44100 ? 48000 : 44100));
     else
         printf ("file \"%s\" is %s and cannot be converted\n", infilename, info->format);
 
@@ -962,7 +979,7 @@ static int convert_dsd_to_dxd (char *infilename, char *outfilename, char *error)
 
 static int convert_dxd_to_dsd (char *infilename, ChannelData *chan_data, char *outfilename, char *error)
 {
-    int flags = OPEN_WVC | OPEN_TAGS | (4 << OPEN_THREADS_SHFT), embedded_dsd = 0;
+    int flags = OPEN_WVC | OPEN_TAGS | (4 << OPEN_THREADS_SHFT), embedded_dsd_sectors = 0, non_embedded_dsd_sectors = 0;
     WavpackContext *incxt = WavpackOpenFileInput (infilename, error, flags, 0), *outcxt;
     WavpackFileInfo *file_info;
     WavpackConfig config = {};
@@ -1008,20 +1025,8 @@ static int convert_dxd_to_dsd (char *infilename, ChannelData *chan_data, char *o
         if (percentile_999 > max_percentile_999)
             max_percentile_999 = percentile_999;
 
-        embedded_dsd += chan_data [c].valid_dsd_sectors;
-    }
-
-    if (embedded_dsd)
-        printf ("embedded DSD detected, unity gain (max magnitude = %.6f, 99.9th percentile = %.6f)\n",
-            max_magnitude, max_percentile_999);
-    else {
-        gain = fmin (fmin (0.72 / max_magnitude, 0.5 / max_percentile_999), 1.00);
-        if (gain == 1.00)
-            printf ("embedded DSD not detected, no gain reduction (max magnitude = %.6f, 99.9th percentile = %.6f)\n",
-                max_magnitude, max_percentile_999);
-        else
-            printf ("embedded DSD not detected, reducing gain by %.2f dB (max magnitude = %.6f, 99.9th percentile = %.6f)\n", log10 (gain) * -20.0,
-                max_magnitude, max_percentile_999);
+        non_embedded_dsd_sectors += chan_data [c].no_dsd_sectors;
+        embedded_dsd_sectors += chan_data [c].valid_dsd_sectors;
     }
 
     outcxt = WavpackOpenFileOutput (write_block, &wv_file, NULL);
@@ -1084,16 +1089,42 @@ static int convert_dxd_to_dsd (char *infilename, ChannelData *chan_data, char *o
     Modulate *modulator = NULL;
     Decoder *decoder = NULL;
 
-    if (!detect_pilot)
+    if ((always_extract || !non_embedded_dsd_sectors) && !never_extract) {
         decoder = decodeInit (nchans, level, DECODER_EXTRACT_ALWAYS | MODULATE_MULTITHREADED);
-    else if (embedded_dsd && extract_dsd)
-        decoder = decodeInit (nchans, level, MODULATE_MULTITHREADED);
-    else
+
+        printf ("extracting DXD%d%s file \"%s\" to DSD%d file \"%s\"...\n",
+            file_info->sample_rate / 1000, embedded_dsd_sectors ? "-e" : "", infilename,
+            file_info->sample_rate * 8 / (file_info->sample_rate % 44100 ? 48000 : 44100), outfilename);
+
+        if (non_embedded_dsd_sectors) {
+            if (embedded_dsd_sectors)
+                printf ("*** warning: this is probably an error because the source DXD file has some areas with the embedded DSD pilot ***\n");
+            else
+                printf ("*** warning: this is an error unless source DXD file was intentionally created without the DSD pilot ***\n");
+        }
+    }
+    else if (never_extract || !embedded_dsd_sectors) {
         modulator = modulateInit (nchans, level, MODULATE_MULTITHREADED);
 
-    printf ("converting DXD%d%s file \"%s\" to DSD%d file \"%s\" at level %d...\n",
-        file_info->sample_rate / 1000, embedded_dsd ? "-e" : "", infilename,
-        file_info->sample_rate * 8 / (file_info->sample_rate % 44100 ? 48000 : 44100), outfilename, level);
+        if (!keep_gain) {
+            gain = fmin (fmin (0.72 / max_magnitude, 0.5 / max_percentile_999), 1.00);
+
+            if (gain < 1.00)
+                printf ("reducing gain by %.2f dB (max magnitude = %.6f, 99.9th percentile = %.6f)\n", log10 (gain) * -20.0,
+                    max_magnitude, max_percentile_999);
+        }
+
+        printf ("converting DXD%d%s file \"%s\", with no extraction, to DSD%d file \"%s\" at level %d...\n",
+            file_info->sample_rate / 1000, embedded_dsd_sectors ? "-e" : "", infilename,
+            file_info->sample_rate * 8 / (file_info->sample_rate % 44100 ? 48000 : 44100), outfilename, level);
+    }
+    else {
+        decoder = decodeInit (nchans, level, MODULATE_MULTITHREADED);
+
+        printf ("converting DXD%d%s file \"%s\" to DSD%d file \"%s\" at level %d...\n",
+            file_info->sample_rate / 1000, embedded_dsd_sectors ? "-e" : "", infilename,
+            file_info->sample_rate * 8 / (file_info->sample_rate % 44100 ? 48000 : 44100), outfilename, level);
+    }
 
     if (!quiet && file_info->total_samples > 1000000) {
         progress_divider = (file_info->total_samples + 50) / 100;
@@ -1217,8 +1248,10 @@ static int convert_dxd_to_dsd (char *infilename, ChannelData *chan_data, char *o
 
         decodeFree (decoder);
     }
-    else
+    else {
+        printf ("no extraction performed, all DSD samples were regenerated from DXD audio\n");
         modulateFree (modulator);
+    }
 
     free (file_info->chan_data);
     free (file_info);
