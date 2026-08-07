@@ -11,23 +11,14 @@
 #include "dsd-utils.h"
 
 ////////////////////////////////////////////////////////////////////////////
-// Code to decimate DSD audio 8x to PCM. Includes option for biquad filter
-// to improve frequency response (with phase delay!) and to perform
+// Code to decimate DSD audio 8x to PCM. Includes function to perform
 // decimation to a single sample (used with alignment and transitions).
 ////////////////////////////////////////////////////////////////////////////
-
-static void extrapolate_pcm (int32_t *samples, int samples_to_extrapolate, int samples_visible, int num_channels);
-
-// Lowpass, Sample rate = 352800, Fc = 44100, Q = 0.875
-static BiquadCoefficients lowpass_filter = {
-    0.10430216888580293, 0.20860433777160586, 0.10430216888580293, 0.0, 0.0,
-    -1.007230842836138, 0.4244395183793498, 0.0, 0.0
-};
 
 DecimateDSD *decimateDSDinit (int num_channels, int flags)
 {
     DecimateDSD *cxt = (DecimateDSD *)malloc (sizeof (DecimateDSD));
-    double filter_sum = 0, filter_scale;
+    double filter_scale;
     int i, j;
 
     if (!cxt)
@@ -37,10 +28,11 @@ DecimateDSD *decimateDSDinit (int num_channels, int flags)
     cxt->num_channels = num_channels;
     cxt->flags = flags;
 
-    for (i = 0; i < NUM_FILTER_TERMS; ++i)
-        filter_sum += decm_filter [i];
+    for (int start_byte = 0; start_byte <= DELAY_SAMPLES; ++start_byte)
+        for (i = start_byte * 8; i < NUM_FILTER_TERMS - start_byte * 8; ++i)
+            cxt->filter_sums [start_byte] += decm_filter [i];
 
-    filter_scale = ((1 << 23) - 1) / filter_sum * 16.0;
+    filter_scale = ((1 << 23) - 1) / (double) cxt->filter_sums [0] * 16.0;
 
     for (i = 0; i < NUM_FILTER_TERMS; ++i) {
         int scaled_term = (int) floor (decm_filter [i] * filter_scale + 0.5);
@@ -75,164 +67,114 @@ void decimateDSDreset (DecimateDSD *cxt)
     if (!cxt)
         return;
 
-    for (chan = 0; chan < cxt->num_channels; ++chan) {
-        if (cxt->flags & DECIMATE_LOWPASS)
-            biquad_init (&cxt->chans [chan].lowpass_filter, &lowpass_filter, 1.0);
-
+    for (chan = 0; chan < cxt->num_channels; ++chan)
         for (i = 0; i < HISTORY_BYTES; ++i)
             cxt->chans [chan].delay [i] = 0x55;
-    }
 
     cxt->reset = 1;
 }
 
 int decimateDSDrun (DecimateDSD *cxt, const unsigned char *in_samples, int numInputFrames, int32_t *out_samples)
 {
-    int chan = 0, scount = numInputFrames;
     int32_t *outsamptr = out_samples;
+    int numOutputFrames = 0;
 
     if (!cxt)
         return 0;
 
-    // This is where we extrapolate the last samples converted because we don't have the DSD data
-    // to calculate the actual values. Note that the extrapolation function only extrapolates
-    // backward (required for the first frame) so here we have to flip everything around.
-
     if (numInputFrames < 0) {
-        int32_t extrapolation_buffer [cxt->num_channels * (DELAY_SAMPLES + LAST_SAMPLES)];
-        int32_t *bufptr = extrapolation_buffer + (DELAY_SAMPLES * cxt->num_channels);
-
         if (cxt->reset)
             return 0;
 
-        for (int i = 0; i < LAST_SAMPLES; ++i)
-            for (int c = 0; c < cxt->num_channels; ++c)
-                *bufptr++ = cxt->chans [c].last_samples [(--cxt->chans [c].last_sample_index) & LAST_SAMPLES_MASK];
+        for (int j = 1; j < DELAY_SAMPLES; ++j)
+            for (int chan = 0; chan < cxt->num_channels; ++chan) {
+                DecimateDSDchannel *sp = cxt->chans + chan;
+                int32_t sum = 0;
 
-        extrapolate_pcm (extrapolation_buffer, DELAY_SAMPLES, DELAY_SAMPLES + LAST_SAMPLES, cxt->num_channels);
+                for (int i = j * 2; i < HISTORY_BYTES; ++i)
+                    sum += cxt->conv_tables [i - j] [sp->delay [i]];
 
-        for (int i = DELAY_SAMPLES - 1; i >= 0; --i)
-            for (int c = 0; c < cxt->num_channels; ++c)
-                *out_samples++ = extrapolation_buffer [(i * cxt->num_channels) + c];
+                sum = (int32_t) floor ((double) sum * cxt->filter_sums [0] / cxt->filter_sums [j] + 0.5);
+                *outsamptr++ = (sum + 8) >> 4;
+            }
+
+        for (int chan = 0; chan < cxt->num_channels; ++chan) {
+            *outsamptr = ((outsamptr [-cxt->num_channels] * 3) - outsamptr [-cxt->num_channels * 2]) / 2;
+            outsamptr++;
+        }
 
         decimateDSDreset (cxt);
         return DELAY_SAMPLES;
     }
 
-    while (scount) {
-        DecimateDSDchannel *sp = cxt->chans + chan;
-        int32_t sum = 0;
+    for (int i = 0; i < numInputFrames; ++i) {
+        cxt->output_index++;
 
-#if (HISTORY_BYTES == 7)
-        sum += cxt->conv_tables [0] [sp->delay [0] = sp->delay [1]];
-        sum += cxt->conv_tables [1] [sp->delay [1] = sp->delay [2]];
-        sum += cxt->conv_tables [2] [sp->delay [2] = sp->delay [3]];
-        sum += cxt->conv_tables [3] [sp->delay [3] = sp->delay [4]];
-        sum += cxt->conv_tables [4] [sp->delay [4] = sp->delay [5]];
-        sum += cxt->conv_tables [5] [sp->delay [5] = sp->delay [6]];
-        sum += cxt->conv_tables [6] [sp->delay [6] = *in_samples++];
-#else
-        int i;
+        for (int chan = 0; chan < cxt->num_channels; ++chan) {
+            DecimateDSDchannel *sp = cxt->chans + chan;
+            int32_t sum = 0, i;
 
-        for (i = 0; i < HISTORY_BYTES-1; ++i)
-            sum += cxt->conv_tables [i] [sp->delay [i] = sp->delay [i+1]];
+            for (i = 0; i < HISTORY_BYTES-1; ++i)
+                sum += cxt->conv_tables [i] [sp->delay [i] = sp->delay [i+1]];
 
-        sum += cxt->conv_tables [i] [sp->delay [i] = *in_samples++];
-#endif
+            sum += cxt->conv_tables [i] [sp->delay [i] = *in_samples++];
 
-        if (cxt->flags & DECIMATE_LOWPASS) {
-            float fsample = biquad_apply_sample (&sp->lowpass_filter, sum / 134217728.0);
-            *outsamptr++ = sp->last_samples [sp->last_sample_index++ & LAST_SAMPLES_MASK] = (int32_t) floor (fsample * 8388608.0);
+            if (cxt->output_index >= HISTORY_BYTES) {
+                *outsamptr++ = (sum + 8) >> 4;
+                numOutputFrames++;
+            }
         }
-        else
-            *outsamptr++ = sp->last_samples [sp->last_sample_index++ & LAST_SAMPLES_MASK] = (sum + 8) >> 4;
 
-        if (++chan == cxt->num_channels) {
-            scount--;
-            chan = 0;
+        if (cxt->output_index == HISTORY_BYTES - 2) {
+            outsamptr += cxt->num_channels;     // make room for first sample which we reverse extrapolate
+
+            for (int j = DELAY_SAMPLES - 1; j; j--)
+                for (int chan = 0; chan < cxt->num_channels; ++chan) {
+                    DecimateDSDchannel *sp = cxt->chans + chan;
+                    int32_t sum = 0;
+
+                    for (int i = 2; i <= (HISTORY_BYTES + 1) - (j * 2); ++i)
+                        sum += cxt->conv_tables [i + j - 2] [sp->delay [i]];
+
+                    sum = (int32_t) floor ((double) sum * cxt->filter_sums [0] / cxt->filter_sums [j] + 0.5);
+                    *outsamptr++ = (sum + 8) >> 4;
+                    numOutputFrames++;
+                }
+
+            outsamptr -= cxt->num_channels * DELAY_SAMPLES;
+
+            for (int chan = 0; chan < cxt->num_channels; ++chan) {
+                *outsamptr = ((outsamptr [cxt->num_channels] * 3) - outsamptr [cxt->num_channels * 2]) / 2;
+                numOutputFrames++;
+                outsamptr++;
+            }
+
+            outsamptr += cxt->num_channels * (DELAY_SAMPLES - 1);
+            cxt->reset = 0;
         }
     }
 
-    if (cxt->reset) {
-        numInputFrames -= DELAY_SAMPLES;
-        memmove (out_samples, out_samples + DELAY_SAMPLES * cxt->num_channels, numInputFrames * cxt->num_channels * sizeof (int32_t));
-        extrapolate_pcm (out_samples, DELAY_SAMPLES, numInputFrames, cxt->num_channels);
-        cxt->reset = 0;
-    }
-
-    return numInputFrames;
+    return numOutputFrames / cxt->num_channels;
 }
 
 int32_t decimateSingleDSDsample (DecimateDSD *cxt, const unsigned char in_samples [HISTORY_BYTES])
 {
-#if (HISTORY_BYTES == 7)
-    int32_t sum =
-        cxt->conv_tables [0] [in_samples [0]] +
-        cxt->conv_tables [1] [in_samples [1]] +
-        cxt->conv_tables [2] [in_samples [2]] +
-        cxt->conv_tables [3] [in_samples [3]] +
-        cxt->conv_tables [4] [in_samples [4]] +
-        cxt->conv_tables [5] [in_samples [5]] +
-        cxt->conv_tables [6] [in_samples [6]];
-#else
     int32_t sum = 0;
-    int i;
 
-    for (i = 0; i < HISTORY_BYTES; ++i)
-        sum += cxt->conv_tables [i] in_samples [i];
-#endif
+    if (HISTORY_BYTES == 7) {
+        sum = cxt->conv_tables [0] [in_samples [0]] +
+              cxt->conv_tables [1] [in_samples [1]] +
+              cxt->conv_tables [2] [in_samples [2]] +
+              cxt->conv_tables [3] [in_samples [3]] +
+              cxt->conv_tables [4] [in_samples [4]] +
+              cxt->conv_tables [5] [in_samples [5]] +
+              cxt->conv_tables [6] [in_samples [6]];
+    }
+    else
+        for (int i = 0; i < HISTORY_BYTES; ++i)
+            sum += cxt->conv_tables [i] [in_samples [i]];
 
     return (sum + 8) >> 4;
-}
-
-// This function is used to linearly extrapolate some samples at the beginning of the first
-// decoded frame and at the end of the last decoded frame because we don't have the required
-// DSD data to calculate the actual samples. This function only extrapolates backward, as
-// shown here:
-//
-//              |<-----------------------samples_visible------------------------------------>|
-// *samples --> |----------------------------------------------------------------------------|
-//              |<--samples_to_extrapolate-->|<------ samples that are analyzed ------------>|
-//              |        (write only)        |               (read only)                     |
-//
-// To do the forward extrapolation for the last frame, the function must be presented with
-// the data the other way around (i.e. flipped).
-
-static void extrapolate_pcm (int32_t *samples, int samples_to_extrapolate, int samples_visible, int num_channels)
-{
-    int min_period = 3, max_period = 6;
-
-    if (samples_visible < samples_to_extrapolate + min_period * 2)
-        return;
-
-    if (samples_visible < samples_to_extrapolate + max_period * 2)
-        max_period = (samples_visible - samples_to_extrapolate) / 2;
-
-    for (int chan = 0; chan < num_channels; ++chan) {
-        int32_t *base_ptr = samples + samples_to_extrapolate * num_channels + chan;
-        double intercept_ave = 0.0, slope_ave = 0.0;
-
-        for (int period = min_period; period <= max_period; ++period) {
-            int32_t *sam1 = base_ptr, *sam2 = base_ptr + period * num_channels;
-            double X1 = (period - 1) / 2.0, X2 = (period - 1) / 2.0 + period;
-            double Y1 = 0.0, Y2 = 0.0;
-            double intercept, slope;
-
-            for (int i = 0; i < period; ++i) {
-                Y1 += (float) sam1 [i * num_channels] / period;
-                Y2 += (float) sam2 [i * num_channels] / period;
-            }
-
-            slope = (Y2 - Y1) / (X2 - X1);
-            intercept = Y1 - slope * X1;
-
-            intercept_ave += intercept / (max_period - min_period + 1);
-            slope_ave += slope / (max_period - min_period + 1);
-        }
-
-        for (int i = 1; i <= samples_to_extrapolate; ++i)
-            base_ptr [-i * num_channels] = (int32_t) floor ((intercept_ave + slope_ave * -i) + 0.5);
-    }
 }
 
 void decimateDSDdestroy (DecimateDSD *cxt)

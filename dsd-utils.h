@@ -23,8 +23,6 @@
 
 // ******************** DSD Decimator ********************
 
-#define DECIMATE_LOWPASS    0x1
-
 // 56 term decimation filter
 // < 0.5 dB down at 20 kHz
 // > 100 dB stopband attenuation (fs/12)
@@ -43,20 +41,16 @@ static const int32_t decm_filter [] = {
 #define HISTORY_BYTES       ((NUM_FILTER_TERMS+7)/8)
 #define DELAY_SAMPLES       ((HISTORY_BYTES - 1) / 2)
 
-#define LAST_SAMPLES        16                      // output samples to keep for final extrapolation
-#define LAST_SAMPLES_MASK   (LAST_SAMPLES - 1)      // (must be power of two for functioning mask)
-
 typedef struct {
     unsigned char delay [HISTORY_BYTES];
-    int32_t last_samples [LAST_SAMPLES];
-    int last_sample_index;
-    Biquad lowpass_filter;
 } DecimateDSDchannel;
 
 typedef struct {
     int32_t conv_tables [HISTORY_BYTES] [256];
+    int32_t filter_sums [DELAY_SAMPLES + 1];
     int flags, num_channels, reset;
     DecimateDSDchannel *chans;
+    int64_t output_index;
 } DecimateDSD;
 
 #ifdef __cplusplus

@@ -12,7 +12,7 @@ int main (int argc, char **argv)
 {
     int64_t total_dsd_samples = 0, total_pcm_samples = 0;
     int source_head = 0, decimate_tail = 0, embed_tail = 0;
-    int nchans = 2, embed_dsd = 0, flags = 0, filter = 0;
+    int nchans = 2, embed_dsd = 0, flags = 0;
     EmbedDSD *dsd_embedder = NULL;
     DecimateDSD *dsd_decimator;
     unsigned char *src_buffer;
@@ -25,7 +25,6 @@ int main (int argc, char **argv)
         fprintf (stderr, "       [E|e] to embed source DSD\n");
         fprintf (stderr, "       [P|p] to add pilot signal (unique every run for production)\n");
         fprintf (stderr, "       [S|s] to add pilot signal (same every run for testing)\n");
-        fprintf (stderr, "       [F|f] for lowpass filter\n");
         return 0;
     }
 
@@ -48,8 +47,6 @@ int main (int argc, char **argv)
                 flags |= EMBED_PILOT_SIGNAL;
                 flags &= ~EMBED_PILOT_UNIQUE;
             }
-            else if (strlen (argv [argi]) == 1 && (*argv [argi] == 'f' || *argv [argi] == 'F'))
-                filter = 1;
             else {
                 fprintf (stderr, "unknown argument: %s\n", argv [argi]);
                 return 1;
@@ -63,7 +60,7 @@ int main (int argc, char **argv)
 
     src_buffer = calloc (sizeof (unsigned char), BUFSAMPLES * nchans);
     dst_buffer = calloc (sizeof (int32_t), BUFSAMPLES * nchans);
-    dsd_decimator = decimateDSDinit (nchans, filter ? DECIMATE_LOWPASS : 0);
+    dsd_decimator = decimateDSDinit (nchans, 0);
 
     if (embed_dsd)
         dsd_embedder = embedDSDinit (nchans, flags);
